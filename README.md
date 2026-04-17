@@ -9,7 +9,7 @@ Bindery's Go codebase.
 
 | Name             | Target       | Path                        | Status  |
 |------------------|--------------|-----------------------------|---------|
-| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.2.0  |
+| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.3.0  |
 
 ## Quick start
 
