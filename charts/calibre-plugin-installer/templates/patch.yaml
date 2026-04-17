@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.calibreDeploymentName | quote }}
+  namespace: {{ .Values.calibreNamespace | quote }}
+  annotations:
+    bindery.plugins/installed-version: {{ .Values.pluginVersion | quote }}
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: bindery-bridge-installer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PLUGIN_VERSION
+              value: {{ .Values.pluginVersion | quote }}
+            - name: PLUGIN_DEST_DIR
+              value: {{ .Values.pluginDestDir | quote }}
+            - name: PLUGIN_URL
+              value: {{ tpl .Values.releaseUrlTemplate . | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              mkdir -p "$PLUGIN_DEST_DIR"
+              echo "Downloading Bindery Bridge ${PLUGIN_VERSION} from ${PLUGIN_URL}"
+              curl -fsSL "$PLUGIN_URL" -o "$PLUGIN_DEST_DIR/bindery_bridge.zip"
+              echo "Installed bindery-bridge $PLUGIN_VERSION into $PLUGIN_DEST_DIR"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          volumeMounts:
+            - name: {{ .Values.volumeName | quote }}
+              mountPath: /config

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: calibre-plugin-installer
+description: >-
+  Adds an init-container to an existing Calibre Deployment that downloads the
+  Bindery Bridge plugin .zip from GitHub Releases into Calibre's persistent
+  plugins directory before startup.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - calibre
+  - bindery
+  - plugin
+home: https://github.com/vavallee/bindery-plugins
+sources:
+  - https://github.com/vavallee/bindery-plugins
+maintainers:
+  - name: vavallee

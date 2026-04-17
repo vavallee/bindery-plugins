@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: calibre-plugin-installer
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - cluster: homelab
+            namespace: default
+            pluginVersion: "0.1.0"
+  template:
+    metadata:
+      name: "calibre-plugin-installer-{{cluster}}"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/vavallee/bindery-plugins
+        targetRevision: development
+        path: charts/calibre-plugin-installer
+        helm:
+          releaseName: calibre-plugin-installer
+          valuesObject:
+            pluginVersion: "{{pluginVersion}}"
+            calibreDeploymentName: calibre
+            calibreNamespace: "{{namespace}}"
+            pluginDestDir: /config/.config/calibre/plugins
+            volumeName: config
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{namespace}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - ApplyOutOfSyncOnly=true
+          - ServerSideApply=true

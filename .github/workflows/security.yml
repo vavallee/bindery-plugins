@@ -1,0 +1,101 @@
+name: Security
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main, development]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  sast:
+    name: SAST (Bandit + Semgrep)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Bandit
+        run: pip install bandit
+      - name: Bandit
+        run: bandit -r plugins/ -x plugins/calibre-bridge/tests
+      - name: Semgrep (python)
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: "p/python"
+      - name: Semgrep (security-audit)
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: "p/security-audit"
+
+  deps:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit --strict || true
+
+  secrets:
+    name: Secret scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  iac:
+    name: IaC (helm lint + checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+      - name: helm lint
+        run: helm lint charts/calibre-plugin-installer
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: charts/
+          framework: helm
+          soft_fail: true
+
+  sbom:
+    name: SBOM (syft)
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build plugin zip
+        run: python scripts/build_plugin.py plugins/calibre-bridge --output-dir dist
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: dist/
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json

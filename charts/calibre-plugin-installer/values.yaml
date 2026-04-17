@@ -1,0 +1,11 @@
+pluginVersion: "0.1.0"
+calibreDeploymentName: calibre
+calibreNamespace: default
+pluginDestDir: /config/.config/calibre/plugins
+volumeName: config
+
+image:
+  repository: curlimages/curl
+  tag: 8.5.0
+
+releaseUrlTemplate: "https://github.com/vavallee/bindery-plugins/releases/download/v-calibre-bridge-{{ .Values.pluginVersion }}/calibre-bridge-v{{ .Values.pluginVersion }}.zip"
