@@ -2,16 +2,17 @@ import threading
 
 from calibre.gui2.actions import InterfaceAction
 
-from calibre_plugins.bindery_bridge.plugin.config import load_config
-from calibre_plugins.bindery_bridge.plugin.server import BridgeServer
-
 
 class BinderyBridgeAction(InterfaceAction):
     name = 'Bindery Bridge'
     action_spec = ('Bindery Bridge', None, 'Configure the Bindery Bridge HTTP API', None)
 
     def genesis(self):
-        self._db_ready = True
+        from calibre_plugins.bindery_bridge.plugin.config import load_config
+        from calibre_plugins.bindery_bridge.plugin.server import BridgeServer
+
+        self._BridgeServer = BridgeServer
+        self._load_config = load_config
         self._server = None
         self._start_lock = threading.Lock()
         self.qaction.triggered.connect(self.show_dialog)
@@ -21,8 +22,8 @@ class BinderyBridgeAction(InterfaceAction):
         with self._start_lock:
             if self._server is not None:
                 return
-            cfg = load_config()
-            self._server = BridgeServer()
+            cfg = self._load_config()
+            self._server = self._BridgeServer()
             try:
                 self._server.start(
                     port=int(cfg['port']),
@@ -38,20 +39,24 @@ class BinderyBridgeAction(InterfaceAction):
                 self._server = None
                 self.gui.status_bar.show_message('Bindery Bridge failed to start: %s' % exc, 5000)
 
+    def _restart_server(self):
+        with self._start_lock:
+            if self._server is not None:
+                try:
+                    self._server.stop()
+                except Exception:
+                    pass
+                self._server = None
+        self._start_server()
+
     def _get_db(self):
-        if not getattr(self, '_db_ready', False):
-            return None
         try:
             return self.gui.current_db
         except Exception:
             return None
 
     def library_changed(self, db):
-        self._db_ready = False
-        try:
-            pass
-        finally:
-            self._db_ready = True
+        pass
 
     def shutting_down(self):
         try:
@@ -62,8 +67,7 @@ class BinderyBridgeAction(InterfaceAction):
         return True
 
     def show_dialog(self):
-        from calibre.gui2 import show_restart_warning
-        from PyQt5.Qt import QDialog, QDialogButtonBox, QVBoxLayout
+        from qt.core import QDialog, QDialogButtonBox, QVBoxLayout
 
         from calibre_plugins.bindery_bridge.plugin.config import ConfigWidget
 
@@ -72,10 +76,12 @@ class BinderyBridgeAction(InterfaceAction):
         layout = QVBoxLayout(dlg)
         widget = ConfigWidget()
         layout.addWidget(widget)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec_() == QDialog.DialogCode.Accepted:
             widget.commit()
-            show_restart_warning('Restart Calibre for Bindery Bridge settings to take effect.')
+            self._restart_server()

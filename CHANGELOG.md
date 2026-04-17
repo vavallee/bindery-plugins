@@ -7,6 +7,21 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.2.0] - 2026-04-17
+
+- Replace `PyQt5.Qt` imports with calibre's `qt.core` compatibility shim for
+  forward compatibility with Qt6.
+- Qt imports in `config.py` are now at module scope (acceptable — the module
+  is only ever loaded lazily in GUI context via `actual_plugin` indirection).
+- `genesis()` imports `load_config` and `BridgeServer` lazily to avoid any
+  import-time side effects before the GUI is ready.
+- Added `_restart_server()`: applying new settings in the config dialog now
+  restarts the HTTP server in-place without requiring a Calibre restart.
+- Changed default `bind_host` from `127.0.0.1` to `0.0.0.0` so the server
+  is reachable from other pods/containers out of the box.
+- Simplified `_get_db()` — removed broken `_db_ready` flag that was set
+  `False` and immediately reset `True` in a no-op `finally` block.
+
 ### [0.1.0] - 2026-04-17
 
 Initial release.

@@ -1,9 +1,9 @@
 from calibre.utils.config import JSONConfig
-from PyQt5.Qt import QFormLayout, QLineEdit, QSpinBox, QWidget
+from qt.core import QFormLayout, QLineEdit, QSpinBox, QWidget
 
 DEFAULTS = {
     'port': 8099,
-    'bind_host': '127.0.0.1',
+    'bind_host': '0.0.0.0',
     'api_key': '',
 }
 
@@ -17,8 +17,8 @@ def load_config() -> dict:
 
 
 class ConfigWidget(QWidget):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         layout = QFormLayout(self)
 
         self.port_input = QSpinBox(self)
@@ -30,7 +30,7 @@ class ConfigWidget(QWidget):
         layout.addRow('Bind host:', self.bind_host_input)
 
         self.api_key_input = QLineEdit(str(prefs.get('api_key', DEFAULTS['api_key'])), self)
-        self.api_key_input.setEchoMode(QLineEdit.Password)
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addRow('API key:', self.api_key_input)
 
     def commit(self):
