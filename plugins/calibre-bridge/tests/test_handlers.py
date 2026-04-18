@@ -134,3 +134,83 @@ def test_post_books_happy_path(handler_factory, tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_post_books_duplicate_returns_existing_id(handler_factory, tmp_path):
+    """Duplicate path must return the existing library id, not crash.
+
+    Regression for v0.3.0 bug where adder returned the raw (mi, fmt_map)
+    tuple and the handler's int() coercion raised TypeError outside the
+    try/except — producing an empty TCP reply (EOF) to the caller.
+    """
+    book = tmp_path / 'book.epub'
+    book.write_bytes(b'stub')
+
+    db = MagicMock()
+    db.library_path = str(tmp_path)
+    # add_books reports no adds + one duplicate input
+    db.new_api.add_books.return_value = ([], [(MagicMock(), {'EPUB': str(book)})])
+    # find_identical_books is how we recover the existing id
+    db.new_api.find_identical_books.return_value = {456}
+
+    handler_cls = handler_factory.make_handler(api_key='secret', get_db=lambda: db)
+    httpd, port = _serve(handler_cls)
+    try:
+        req = urllib.request.Request(
+            'http://127.0.0.1:%d/v1/books' % port,
+            data=json.dumps({'path': str(book)}).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer secret',
+            },
+            method='POST',
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            raised = False
+        except urllib.error.HTTPError as exc:
+            raised = True
+            assert exc.code == 409
+            payload = json.loads(exc.read().decode('utf-8'))
+            assert payload == {'id': 456, 'duplicate': True}
+        assert raised
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_post_books_duplicate_without_identical_match(handler_factory, tmp_path):
+    """If find_identical_books returns empty, fall back to id=0 rather
+    than raising — clients still see a clean 409."""
+    book = tmp_path / 'book.epub'
+    book.write_bytes(b'stub')
+
+    db = MagicMock()
+    db.library_path = str(tmp_path)
+    db.new_api.add_books.return_value = ([], [(MagicMock(), {'EPUB': str(book)})])
+    db.new_api.find_identical_books.return_value = set()
+
+    handler_cls = handler_factory.make_handler(api_key='secret', get_db=lambda: db)
+    httpd, port = _serve(handler_cls)
+    try:
+        req = urllib.request.Request(
+            'http://127.0.0.1:%d/v1/books' % port,
+            data=json.dumps({'path': str(book)}).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer secret',
+            },
+            method='POST',
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            raised = False
+        except urllib.error.HTTPError as exc:
+            raised = True
+            assert exc.code == 409
+            payload = json.loads(exc.read().decode('utf-8'))
+            assert payload == {'id': 0, 'duplicate': True}
+        assert raised
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

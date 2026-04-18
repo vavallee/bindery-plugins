@@ -62,14 +62,38 @@ def test_add_book_happy_path(tmp_path):
 
 
 def test_add_book_duplicate(tmp_path):
+    """Calibre's add_books returns dups as a list of (mi, format_map) tuples
+    — the ORIGINAL inputs, not book ids. The adder must look up the existing
+    library id via find_identical_books. v0.3.0 returned the raw tuple, which
+    crashed the handler with TypeError on int() coercion and produced an
+    empty TCP reply to the caller."""
     adder = _load_adder()
     book = tmp_path / 'book.epub'
     book.write_bytes(b'stub epub bytes')
 
     db = MagicMock()
-    db.new_api.add_books.return_value = ([], {7: 'dup'})
+    mi = MagicMock(name='Metadata')
+    db.new_api.add_books.return_value = ([], [(mi, {'EPUB': str(book)})])
+    db.new_api.find_identical_books.return_value = {7}
 
     book_id, duplicate = adder.add_book(db, str(book))
 
     assert book_id == 7
+    assert duplicate is True
+
+
+def test_add_book_duplicate_no_identical_match(tmp_path):
+    """Fallback: if find_identical_books returns empty, return id=0 rather
+    than raising — caller still sees a valid 409 response."""
+    adder = _load_adder()
+    book = tmp_path / 'book.epub'
+    book.write_bytes(b'stub epub bytes')
+
+    db = MagicMock()
+    db.new_api.add_books.return_value = ([], [(MagicMock(), {'EPUB': str(book)})])
+    db.new_api.find_identical_books.return_value = set()
+
+    book_id, duplicate = adder.add_book(db, str(book))
+
+    assert book_id == 0
     assert duplicate is True

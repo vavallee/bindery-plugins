@@ -7,6 +7,25 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.4.0] - 2026-04-18
+
+#### Fixed
+
+- Duplicate books no longer crash `POST /v1/books` with an empty TCP
+  reply. `add_book()` now looks up the existing library id via
+  `find_identical_books(mi)` instead of returning the raw `(mi, fmt_map)`
+  tuple that Calibre's `add_books()` reports for duplicate inputs. The
+  handler also defensively coerces the returned id so any future
+  regression surfaces as id=0 rather than another EOF. This bug was
+  triggered whenever a book already existed in the Calibre library — it
+  silently looked like "all books failed" from Bindery's side.
+
+#### Added
+
+- Regression tests for the duplicate path and the
+  no-identical-match fallback. The pre-existing test only covered the
+  net-new add path, which is why the bug shipped.
+
 ### [0.3.0] - 2026-04-18
 
 #### Fixed
