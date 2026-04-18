@@ -82,8 +82,10 @@ def make_handler(api_key: str, get_db, get_gui=None):
             except FileNotFoundError as exc:
                 self._send_json(400, {'error': str(exc)})
                 return
-            except Exception as exc:  # pragma: no cover - defensive
-                self._send_json(500, {'error': str(exc)})
+            except BaseException as exc:  # catch thread-fatal exceptions too
+                import traceback
+                self._send_json(500, {'error': type(exc).__name__ + ': ' + str(exc),
+                                      'traceback': traceback.format_exc()})
                 return
             status = 409 if duplicate else 201
             self._send_json(status, {'id': int(book_id), 'duplicate': bool(duplicate)})
