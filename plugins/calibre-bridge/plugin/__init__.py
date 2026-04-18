@@ -17,6 +17,9 @@ class BinderyBridgeAction(InterfaceAction):
         self.qaction.triggered.connect(self.show_dialog)
         self._start_server()
 
+    def _get_gui(self):
+        return self.gui
+
     def _start_server(self):
         with self._start_lock:
             if self._server is not None:
@@ -29,6 +32,7 @@ class BinderyBridgeAction(InterfaceAction):
                     bind_host=cfg['bind_host'],
                     api_key=cfg['api_key'],
                     get_db=self._get_db,
+                    get_gui=self._get_gui,
                 )
                 self.gui.status_bar.show_message(
                     'Bindery Bridge listening on %s:%s' % (cfg['bind_host'], cfg['port']),

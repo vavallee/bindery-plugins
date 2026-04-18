@@ -7,6 +7,18 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.3.0] - 2026-04-18
+
+#### Fixed
+
+- `POST /v1/books` no longer crashes with an empty TCP reply when Calibre's
+  hook system tries to update Qt widgets from the background HTTP thread.
+  `add_books` is now called with `run_hooks=False` to avoid unsafe
+  cross-thread GUI access.
+- After a successful add the GUI library view is refreshed via
+  `QTimer.singleShot(0, ...)` on the main thread so new books appear without
+  requiring a manual Ctrl+R.
+
 ### [0.1.0] - 2026-04-17
 
 Initial release.
