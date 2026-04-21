@@ -76,7 +76,7 @@ def test_health_endpoint(handler_factory):
     handler_cls = handler_factory.make_handler(api_key="secret", get_db=lambda: db)
     httpd, port = _serve(handler_cls)
     try:
-        with urllib.request.urlopen("http://127.0.0.1:%d/v1/health" % port, timeout=5) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/health", timeout=5) as resp:
             assert resp.status == 200
             payload = json.loads(resp.read().decode("utf-8"))
         assert payload["plugin_version"]
@@ -93,7 +93,7 @@ def test_post_books_requires_auth(handler_factory):
     httpd, port = _serve(handler_cls)
     try:
         req = urllib.request.Request(
-            "http://127.0.0.1:%d/v1/books" % port,
+            f"http://127.0.0.1:{port}/v1/books",
             data=json.dumps({"path": "/tmp/x.epub"}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -122,7 +122,7 @@ def test_post_books_happy_path(handler_factory, tmp_path, monkeypatch):
     httpd, port = _serve(handler_cls)
     try:
         req = urllib.request.Request(
-            "http://127.0.0.1:%d/v1/books" % port,
+            f"http://127.0.0.1:{port}/v1/books",
             data=json.dumps({"path": str(book)}).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",

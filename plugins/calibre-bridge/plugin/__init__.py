@@ -58,11 +58,9 @@ class BinderyBridgeAction(InterfaceAction):
         pass
 
     def shutting_down(self):
-        try:
-            if self._server is not None:
+        if self._server is not None:
+            with contextlib.suppress(Exception):
                 self._server.stop()
-        except Exception:
-            pass
         return True
 
     def show_dialog(self):

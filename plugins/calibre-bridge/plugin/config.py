@@ -5,7 +5,7 @@ from qt.core import QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QSpinBox, 
 
 DEFAULTS = {
     "port": 8099,
-    "bind_host": "0.0.0.0",
+    "bind_host": "0.0.0.0",  # nosec B104 — user-configurable default, not a hardcoded binding
     "api_key": "",
 }
 
