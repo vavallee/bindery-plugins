@@ -14,7 +14,7 @@ class BridgeServer:
         self._httpd = ThreadingHTTPServer((bind_host, port), handler_cls)
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
-            name='bindery-bridge-http',
+            name="bindery-bridge-http",
             daemon=True,
         )
         self._thread.start()

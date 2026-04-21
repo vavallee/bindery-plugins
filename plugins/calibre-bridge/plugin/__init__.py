@@ -1,11 +1,12 @@
+import contextlib
 import threading
 
 from calibre.gui2.actions import InterfaceAction
 
 
 class BinderyBridgeAction(InterfaceAction):
-    name = 'Bindery Bridge'
-    action_spec = ('Bindery Bridge', None, 'Configure the Bindery Bridge HTTP API', None)
+    name = "Bindery Bridge"
+    action_spec = ("Bindery Bridge", None, "Configure the Bindery Bridge HTTP API", None)
 
     def genesis(self):
         from calibre_plugins.bindery_bridge.plugin.config import load_config
@@ -26,26 +27,24 @@ class BinderyBridgeAction(InterfaceAction):
             self._server = self._BridgeServer()
             try:
                 self._server.start(
-                    port=int(cfg['port']),
-                    bind_host=cfg['bind_host'],
-                    api_key=cfg['api_key'],
+                    port=int(cfg["port"]),
+                    bind_host=cfg["bind_host"],
+                    api_key=cfg["api_key"],
                     get_db=self._get_db,
                 )
                 self.gui.status_bar.show_message(
-                    'Bindery Bridge listening on %s:%s' % (cfg['bind_host'], cfg['port']),
+                    f"Bindery Bridge listening on {cfg['bind_host']}:{cfg['port']}",
                     5000,
                 )
             except Exception as exc:
                 self._server = None
-                self.gui.status_bar.show_message('Bindery Bridge failed to start: %s' % exc, 5000)
+                self.gui.status_bar.show_message(f"Bindery Bridge failed to start: {exc}", 5000)
 
     def _restart_server(self):
         with self._start_lock:
             if self._server is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self._server.stop()
-                except Exception:
-                    pass
                 self._server = None
         self._start_server()
 
@@ -67,12 +66,11 @@ class BinderyBridgeAction(InterfaceAction):
         return True
 
     def show_dialog(self):
+        from calibre_plugins.bindery_bridge.plugin.config import ConfigWidget
         from qt.core import QDialog, QDialogButtonBox, QVBoxLayout
 
-        from calibre_plugins.bindery_bridge.plugin.config import ConfigWidget
-
         dlg = QDialog(self.gui)
-        dlg.setWindowTitle('Bindery Bridge')
+        dlg.setWindowTitle("Bindery Bridge")
         layout = QVBoxLayout(dlg)
         widget = ConfigWidget()
         layout.addWidget(widget)

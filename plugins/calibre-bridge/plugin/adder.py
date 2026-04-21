@@ -4,7 +4,7 @@ from calibre.ebooks.metadata.meta import get_metadata
 
 
 def add_book(db, path: str) -> tuple[int, bool]:
-    with open(path, 'rb') as f:
+    with open(path, "rb") as f:
         mi = get_metadata(f, os.path.splitext(path)[1][1:])
     fmt = os.path.splitext(path)[1][1:].upper()
     ids, dups = db.new_api.add_books(
