@@ -7,6 +7,20 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.3.1] - 2026-04-21
+
+- Test suite expanded from 5 to 20 tests — adds 12 handler edge-case tests and 3 `BridgeServer` lifecycle tests. All HTTP error paths are now covered (401, 404, 400 variants, 409 duplicate, 503 library not ready, empty-key bypass).
+- Adds `SECURITY.md` with supported-version table and responsible disclosure policy.
+- Pinned all GitHub Actions in `ci.yml`, `scorecard.yml`, and `security.yml` to commit SHAs (OpenSSF Scorecard `Pinned-Dependencies` compliance).
+- Fixed pre-existing ruff lint issues (`UP031`, `SIM105`, `I001`) and Bandit findings (`B110`, `B104`).
+- Fixed pre-existing `mypy` and `helm lint` failures in CI.
+- Corrects `PLUGIN_VERSION` in `handlers.py` (was still `"0.2.0"`, now matches `__init__.py` version tuple).
+
+### [0.3.0] - 2026-04-17
+
+- Added **Show/Hide** toggle button to API-key field in the config dialog — reveals or masks the key on demand; label updates to reflect current state.
+- Added **Generate** button — fills the API-key field with `os.urandom(32).hex()` and auto-reveals it so the user can inspect/copy before saving.
+
 ### [0.2.0] - 2026-04-17
 
 - Replace `PyQt5.Qt` imports with calibre's `qt.core` compatibility shim for

@@ -1,7 +1,7 @@
 import json
 from http.server import BaseHTTPRequestHandler
 
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.3.1"
 
 
 def _calibre_version() -> str:
