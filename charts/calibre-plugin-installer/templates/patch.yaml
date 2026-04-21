@@ -6,6 +6,9 @@ metadata:
   annotations:
     bindery.plugins/installed-version: {{ .Values.pluginVersion | quote }}
 spec:
+  selector:
+    matchLabels:
+      {{- .Values.selectorLabels | toYaml | nindent 6 }}
   template:
     spec:
       initContainers:

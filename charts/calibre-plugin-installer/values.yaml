@@ -3,6 +3,12 @@ calibreDeploymentName: calibre
 calibreNamespace: default
 pluginDestDir: /config/.config/calibre/plugins
 volumeName: config
+# selectorLabels must match the existing calibre Deployment's pod selector labels.
+# This is used to populate spec.selector in the strategic-merge patch so helm lint
+# can validate the template; the selector itself is immutable in Kubernetes and will
+# not change if it already matches the running Deployment.
+selectorLabels:
+  app.kubernetes.io/name: calibre
 
 image:
   repository: curlimages/curl

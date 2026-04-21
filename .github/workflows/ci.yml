@@ -60,7 +60,9 @@ jobs:
       - name: ruff format --check
         run: ruff format --check plugins/ scripts/
       - name: mypy
-        run: mypy --ignore-missing-imports plugins/calibre-bridge/plugin scripts/
+        run: |
+          (cd plugins/calibre-bridge && mypy --ignore-missing-imports --explicit-package-bases plugin)
+          mypy --ignore-missing-imports scripts/
 
   build:
     name: build
