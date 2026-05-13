@@ -1,7 +1,10 @@
 import json
+import logging
 from http.server import BaseHTTPRequestHandler
 
 PLUGIN_VERSION = "0.4.0"
+
+_log = logging.getLogger(__name__)
 
 
 def _calibre_version() -> str:
@@ -34,7 +37,7 @@ def make_handler(api_key: str, get_db, get_gui=None):
         server_version = "BinderyBridge/" + PLUGIN_VERSION
 
         def log_message(self, format, *args):  # noqa: A002
-            return
+            _log.debug(format, *args)
 
         def _send_json(self, status: int, payload: dict):
             body = json.dumps(payload).encode("utf-8")
@@ -49,8 +52,12 @@ def make_handler(api_key: str, get_db, get_gui=None):
                 return True
             header = self.headers.get("Authorization", "")
             if not header.startswith("Bearer "):
+                _log.warning("auth failure: missing Bearer token from %s", self.address_string())
                 return False
-            return header[len("Bearer ") :].strip() == api_key
+            if header[len("Bearer "):].strip() != api_key:
+                _log.warning("auth failure: invalid token from %s", self.address_string())
+                return False
+            return True
 
         def do_GET(self):  # noqa: N802
             if self.path == "/v1/health":
@@ -81,6 +88,7 @@ def make_handler(api_key: str, get_db, get_gui=None):
                 return
             db = get_db()
             if db is None:
+                _log.warning("library not ready — rejecting POST /v1/books")
                 self._send_json(503, {"error": "library not ready"})
                 return
             length = int(self.headers.get("Content-Length") or 0)
@@ -98,12 +106,19 @@ def make_handler(api_key: str, get_db, get_gui=None):
                 gui = get_gui() if get_gui is not None else None
                 book_id, duplicate = add_book(db, path, gui=gui)
             except FileNotFoundError as exc:
+                _log.warning("add_book file not found: %s", exc)
                 self._send_json(400, {"error": str(exc)})
                 return
             except Exception as exc:  # pragma: no cover - defensive
+                _log.error("add_book unexpected error path=%r: %s", path, exc)
                 self._send_json(500, {"error": str(exc)})
                 return
+            coerced_id = _coerce_book_id(book_id)
+            if duplicate:
+                _log.info("add_book duplicate detected id=%d path=%r", coerced_id, path)
+            else:
+                _log.info("add_book success id=%d path=%r", coerced_id, path)
             status = 409 if duplicate else 201
-            self._send_json(status, {"id": _coerce_book_id(book_id), "duplicate": bool(duplicate)})
+            self._send_json(status, {"id": coerced_id, "duplicate": bool(duplicate)})
 
     return Handler

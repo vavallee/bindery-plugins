@@ -1,7 +1,10 @@
 import contextlib
+import logging
 import threading
 
 from calibre.gui2.actions import InterfaceAction
+
+_log = logging.getLogger(__name__)
 
 
 class BinderyBridgeAction(InterfaceAction):
@@ -23,6 +26,7 @@ class BinderyBridgeAction(InterfaceAction):
         return self.gui
 
     def _start_server(self):
+        _log.debug("_start_server called")
         with self._start_lock:
             if self._server is not None:
                 return
@@ -41,6 +45,7 @@ class BinderyBridgeAction(InterfaceAction):
                     5000,
                 )
             except Exception as exc:
+                _log.error("calibre-bridge failed to start: %s", exc)
                 self._server = None
                 self.gui.status_bar.show_message(f"Bindery Bridge failed to start: {exc}", 5000)
 
@@ -62,6 +67,7 @@ class BinderyBridgeAction(InterfaceAction):
         pass
 
     def shutting_down(self):
+        _log.info("calibre-bridge shutting down")
         if self._server is not None:
             with contextlib.suppress(Exception):
                 self._server.stop()

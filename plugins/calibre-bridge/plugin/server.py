@@ -1,7 +1,10 @@
+import logging
 import threading
 from http.server import ThreadingHTTPServer
 
 from calibre_plugins.bindery_bridge.plugin.handlers import make_handler
+
+_log = logging.getLogger(__name__)
 
 
 class BridgeServer:
@@ -18,12 +21,16 @@ class BridgeServer:
             daemon=True,
         )
         self._thread.start()
+        _log.info("calibre-bridge listening on %s:%d", bind_host, port)
 
     def stop(self):
         if self._httpd is not None:
             try:
                 self._httpd.shutdown()
                 self._httpd.server_close()
+                _log.info("calibre-bridge stopped")
+            except Exception as exc:
+                _log.error("error stopping calibre-bridge server: %s", exc)
             finally:
                 self._httpd = None
         if self._thread is not None:
