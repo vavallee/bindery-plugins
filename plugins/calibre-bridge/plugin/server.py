@@ -1,6 +1,8 @@
 import logging
 import threading
+from collections.abc import Callable
 from http.server import ThreadingHTTPServer
+from typing import Any
 
 from calibre_plugins.bindery_bridge.plugin.handlers import make_handler
 
@@ -8,11 +10,18 @@ _log = logging.getLogger(__name__)
 
 
 class BridgeServer:
-    def __init__(self):
-        self._httpd = None
-        self._thread = None
+    def __init__(self) -> None:
+        self._httpd: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
 
-    def start(self, port: int, bind_host: str, api_key: str, get_db, get_gui=None):
+    def start(
+        self,
+        port: int,
+        bind_host: str,
+        api_key: str,
+        get_db: Callable[[], Any],
+        get_gui: Callable[[], Any] | None = None,
+    ) -> None:
         handler_cls = make_handler(api_key=api_key, get_db=get_db, get_gui=get_gui)
         self._httpd = ThreadingHTTPServer((bind_host, port), handler_cls)
         self._thread = threading.Thread(
@@ -23,7 +32,7 @@ class BridgeServer:
         self._thread.start()
         _log.info("calibre-bridge listening on %s:%d", bind_host, port)
 
-    def stop(self):
+    def stop(self) -> None:
         if self._httpd is not None:
             try:
                 self._httpd.shutdown()

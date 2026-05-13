@@ -19,7 +19,7 @@ def load_config() -> dict:
 
 
 class ConfigWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QFormLayout(self)
 
@@ -60,7 +60,7 @@ class ConfigWidget(QWidget):
         self.api_key_input.setText(os.urandom(32).hex())
         self._show_btn.setChecked(True)
 
-    def commit(self):
+    def commit(self) -> None:
         prefs["port"] = int(self.port_input.value())
         prefs["bind_host"] = self.bind_host_input.text().strip() or DEFAULTS["bind_host"]
         prefs["api_key"] = self.api_key_input.text().strip()

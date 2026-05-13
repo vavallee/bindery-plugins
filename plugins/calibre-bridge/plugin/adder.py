@@ -1,10 +1,11 @@
 import os
 import pathlib
+from typing import Any
 
 from calibre.ebooks.metadata.meta import get_metadata
 
 
-def add_book(db, path: str, gui=None) -> tuple[int, bool]:
+def add_book(db: Any, path: str, gui: Any | None = None) -> tuple[int, bool]:
     """Add a book to the Calibre library.
 
     Returns ``(book_id, duplicate)`` where ``book_id`` is the Calibre id of

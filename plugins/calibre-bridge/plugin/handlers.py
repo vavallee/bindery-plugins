@@ -1,6 +1,8 @@
 import json
 import logging
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
+from typing import Any
 
 PLUGIN_VERSION = "0.4.0"
 
@@ -16,7 +18,7 @@ def _calibre_version() -> str:
         return "unknown"
 
 
-def _coerce_book_id(value) -> int:
+def _coerce_book_id(value: Any) -> int:
     """Defensively coerce add_book's return to an int.
 
     Early versions returned the raw (mi, format_map) tuple for the duplicate
@@ -30,16 +32,20 @@ def _coerce_book_id(value) -> int:
         return 0
 
 
-def make_handler(api_key: str, get_db, get_gui=None):
+def make_handler(
+    api_key: str,
+    get_db: Callable[[], Any],
+    get_gui: Callable[[], Any] | None = None,
+) -> type:
     from calibre_plugins.bindery_bridge.plugin.adder import add_book
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "BinderyBridge/" + PLUGIN_VERSION
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             _log.debug(format, *args)
 
-        def _send_json(self, status: int, payload: dict):
+        def _send_json(self, status: int, payload: dict[str, Any]) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -54,12 +60,12 @@ def make_handler(api_key: str, get_db, get_gui=None):
             if not header.startswith("Bearer "):
                 _log.warning("auth failure: missing Bearer token from %s", self.address_string())
                 return False
-            if header[len("Bearer "):].strip() != api_key:
+            if header[len("Bearer ") :].strip() != api_key:
                 _log.warning("auth failure: invalid token from %s", self.address_string())
                 return False
             return True
 
-        def do_GET(self):  # noqa: N802
+        def do_GET(self) -> None:  # noqa: N802
             if self.path == "/v1/health":
                 db = get_db()
                 library = ""
@@ -79,7 +85,7 @@ def make_handler(api_key: str, get_db, get_gui=None):
                 return
             self._send_json(404, {"error": "not found"})
 
-        def do_POST(self):  # noqa: N802
+        def do_POST(self) -> None:  # noqa: N802
             if self.path != "/v1/books":
                 self._send_json(404, {"error": "not found"})
                 return
