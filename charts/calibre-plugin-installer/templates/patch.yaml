@@ -29,7 +29,7 @@ spec:
               set -eu
               mkdir -p "$PLUGIN_DEST_DIR"
               echo "Downloading Bindery Bridge ${PLUGIN_VERSION} from ${PLUGIN_URL}"
-              curl -fsSL "$PLUGIN_URL" -o "$PLUGIN_DEST_DIR/bindery_bridge.zip"
+              curl --retry 5 --retry-delay 4 --retry-connrefused --connect-timeout 10 --max-time 120 --fail -sSL "$PLUGIN_URL" -o "$PLUGIN_DEST_DIR/bindery_bridge.zip"
               echo "Installed bindery-bridge $PLUGIN_VERSION into $PLUGIN_DEST_DIR"
           securityContext:
             runAsNonRoot: true
