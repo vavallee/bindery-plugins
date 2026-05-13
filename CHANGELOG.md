@@ -7,6 +7,14 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.4.0] - 2026-05-13
+
+#### Fixed
+
+- **Qt thread crash on book add** — `add_books()` was called with `run_hooks=True`, causing Calibre's hook system to update Qt GUI widgets from the HTTP server's background thread. The handler thread aborted without sending a response; callers saw an empty TCP reply / EOF. Fixed by passing `run_hooks=False` and scheduling a `QTimer.singleShot(0, ...)` on the GUI thread so the library view still refreshes automatically after each add.
+- **Duplicate path returned Metadata tuple instead of id** — `add_books()` returns `(ids, dups)` where `dups` is a list of `(mi, format_map)` input tuples, not book ids. The old code did `list(dups)[0]`, returning a `Metadata` object; the handler's `int()` coercion then raised `TypeError` outside the try/except, again producing an empty TCP reply. Fixed by using `db.new_api.find_identical_books(mi)` to recover the existing library id. If no match is found, returns `id=0` with `duplicate=True` rather than crashing.
+- Added `_coerce_book_id()` defensive guard in the handler so any future regression in the adder yields a clean `id=0` rather than an EOF.
+
 ### [0.3.1] - 2026-04-21
 
 - Test suite expanded from 5 to 20 tests — adds 12 handler edge-case tests and 3 `BridgeServer` lifecycle tests. All HTTP error paths are now covered (401, 404, 400 variants, 409 duplicate, 503 library not ready, empty-key bypass).

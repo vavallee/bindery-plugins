@@ -1,7 +1,7 @@
 import json
 from http.server import BaseHTTPRequestHandler
 
-PLUGIN_VERSION = "0.3.1"
+PLUGIN_VERSION = "0.4.0"
 
 
 def _calibre_version() -> str:
@@ -13,7 +13,21 @@ def _calibre_version() -> str:
         return "unknown"
 
 
-def make_handler(api_key: str, get_db):
+def _coerce_book_id(value) -> int:
+    """Defensively coerce add_book's return to an int.
+
+    Early versions returned the raw (mi, format_map) tuple for the duplicate
+    path, crashing the handler with TypeError on int() coercion and producing
+    an empty TCP reply. The fix lives in adder.py; this guard ensures a future
+    regression surfaces as id=0 rather than another EOF.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def make_handler(api_key: str, get_db, get_gui=None):
     from calibre_plugins.bindery_bridge.plugin.adder import add_book
 
     class Handler(BaseHTTPRequestHandler):
@@ -81,7 +95,8 @@ def make_handler(api_key: str, get_db):
                 self._send_json(400, {"error": "path required"})
                 return
             try:
-                book_id, duplicate = add_book(db, path)
+                gui = get_gui() if get_gui is not None else None
+                book_id, duplicate = add_book(db, path, gui=gui)
             except FileNotFoundError as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
@@ -89,6 +104,6 @@ def make_handler(api_key: str, get_db):
                 self._send_json(500, {"error": str(exc)})
                 return
             status = 409 if duplicate else 201
-            self._send_json(status, {"id": int(book_id), "duplicate": bool(duplicate)})
+            self._send_json(status, {"id": _coerce_book_id(book_id), "duplicate": bool(duplicate)})
 
     return Handler

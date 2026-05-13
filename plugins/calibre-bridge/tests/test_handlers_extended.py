@@ -241,7 +241,9 @@ def test_post_books_duplicate_returns_409(handler_factory, tmp_path):
 
     db = MagicMock()
     db.library_path = str(tmp_path)
-    db.new_api.add_books.return_value = ([], {7: MagicMock()})
+    # Calibre returns (ids, dups) where dups is a list of (mi, format_map) tuples
+    db.new_api.add_books.return_value = ([], [(MagicMock(), {"EPUB": str(book)})])
+    db.new_api.find_identical_books.return_value = {7}
 
     handler_cls = handler_factory.make_handler(api_key="", get_db=lambda: db)
     httpd, port = _serve(handler_cls)

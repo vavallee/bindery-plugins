@@ -9,8 +9,8 @@ class BridgeServer:
         self._httpd = None
         self._thread = None
 
-    def start(self, port: int, bind_host: str, api_key: str, get_db):
-        handler_cls = make_handler(api_key=api_key, get_db=get_db)
+    def start(self, port: int, bind_host: str, api_key: str, get_db, get_gui=None):
+        handler_cls = make_handler(api_key=api_key, get_db=get_db, get_gui=get_gui)
         self._httpd = ThreadingHTTPServer((bind_host, port), handler_cls)
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
