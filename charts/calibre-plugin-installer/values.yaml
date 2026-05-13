@@ -15,3 +15,15 @@ image:
   tag: 8.5.0
 
 releaseUrlTemplate: "https://github.com/vavallee/bindery-plugins/releases/download/v-calibre-bridge-{{ .Values.pluginVersion }}/calibre-bridge-v{{ .Values.pluginVersion }}.zip"
+
+# networkPolicy — opt-in egress restriction for the calibre pod.
+# When enabled, only DNS + HTTPS egress is allowed; set egressCIDRs to
+# restrict to specific IP ranges (e.g. GitHub + Fastly CDN blocks).
+# Leave egressCIDRs empty to allow HTTPS to any destination.
+networkPolicy:
+  enabled: false
+  egressCIDRs: []
+  # egressCIDRs:
+  #   - 140.82.112.0/20   # github.com
+  #   - 185.199.108.0/22  # github releases CDN
+  #   - 199.232.0.0/16    # fastly CDN

@@ -1,0 +1,31 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.calibreDeploymentName }}-plugin-installer
+  namespace: {{ .Values.calibreNamespace }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.selectorLabels | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow HTTPS to GitHub releases and CDN
+    - ports:
+        - port: 443
+          protocol: TCP
+      {{- if .Values.networkPolicy.egressCIDRs }}
+      to:
+        {{- range .Values.networkPolicy.egressCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      {{- end }}
+{{- end }}
