@@ -1,4 +1,5 @@
 import os
+import pathlib
 
 from calibre.ebooks.metadata.meta import get_metadata
 
@@ -17,6 +18,8 @@ def add_book(db, path: str, gui=None) -> tuple[int, bool]:
     via ``QTimer.singleShot(0, ...)`` so new books appear in the library
     view without a manual Ctrl+R.
     """
+    if ".." in pathlib.Path(path).parts:
+        raise ValueError(f"Path traversal rejected: {path!r}")
     with open(path, "rb") as f:
         mi = get_metadata(f, os.path.splitext(path)[1][1:])
     fmt = os.path.splitext(path)[1][1:].upper()
