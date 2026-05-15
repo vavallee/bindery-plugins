@@ -1,8 +1,11 @@
+import logging
 import os
 import pathlib
 from typing import Any
 
 from calibre.ebooks.metadata.meta import get_metadata
+
+_log = logging.getLogger(__name__)
 
 
 def add_book(
@@ -51,8 +54,8 @@ def add_book(
                 from PyQt5.Qt import QTimer
 
                 QTimer.singleShot(0, gui.library_view.model().resort)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.debug("failed to schedule Calibre library refresh: %s", exc)
         return int(ids[0]), False
 
     if bindery_id:
