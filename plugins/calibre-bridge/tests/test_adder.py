@@ -67,6 +67,7 @@ class _CollisionNewAPI:
         self._identifiers_by_book = {}
         self.add_calls = []
         self.find_identical_books_calls = []
+        self.search_calls = []
 
     def add_books(self, books, add_duplicates, run_hooks):
         mi, format_map = books[0]
@@ -95,15 +96,26 @@ class _CollisionNewAPI:
         book_id = self._first_id_by_title.get(mi.title)
         return set() if book_id is None else {book_id}
 
+    def search(self, query, *args, **kwargs):
+        self.search_calls.append(query)
+        prefix = "identifiers:=bindery:="
+        if not query.startswith(prefix):
+            return set()
+        bindery_id = query.removeprefix(prefix)
+        return {
+            book_id
+            for book_id, identifiers in self._identifiers_by_book.items()
+            if identifiers.get("bindery") == bindery_id
+        }
+
     def all_book_ids(self):
-        return frozenset(self._identifiers_by_book)
+        raise AssertionError("production lookup should use search(), not all_book_ids()")
 
     def all_field_for(self, field, book_ids, default_value=None):
-        assert field == "identifiers"
-        return {
-            book_id: self._identifiers_by_book.get(book_id, default_value or {})
-            for book_id in book_ids
-        }
+        raise AssertionError("production lookup should use search(), not all_field_for()")
+
+    def identifiers_for(self, book_ids):
+        return {book_id: self._identifiers_by_book.get(book_id, {}) for book_id in book_ids}
 
 
 class _CollisionDB:
@@ -176,6 +188,7 @@ def test_add_book_applies_bindery_metadata(tmp_path):
     book.write_bytes(b"stub epub bytes")
 
     db = MagicMock()
+    db.new_api.search.return_value = set()
     db.new_api.add_books.return_value = ([42], {})
     metadata = {
         "title": "Dune",
@@ -213,6 +226,54 @@ def test_add_book_applies_bindery_metadata(tmp_path):
     assert mi.series_index == 1.5
     assert mi.rating == 9
     mi.set_identifiers.assert_called_once_with({"asin": "B000FC1BN8", "bindery": "42"})
+    db.new_api.search.assert_called_once_with("identifiers:=bindery:=42")
+
+
+def test_add_book_existing_bindery_identifier_uses_exact_search(tmp_path):
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub epub bytes")
+
+    db = MagicMock()
+    db.new_api.search.return_value = {9}
+
+    book_id, duplicate = adder.add_book(db, str(book), metadata={"identifiers": {"bindery": "42"}})
+
+    assert book_id == 9
+    assert duplicate is True
+    db.new_api.search.assert_called_once_with("identifiers:=bindery:=42")
+    db.new_api.add_books.assert_not_called()
+    db.new_api.all_book_ids.assert_not_called()
+    db.new_api.all_field_for.assert_not_called()
+
+
+def test_add_book_existing_bindery_identifier_uses_lowest_match(tmp_path):
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub epub bytes")
+
+    db = MagicMock()
+    db.new_api.search.return_value = {9, 3}
+
+    book_id, duplicate = adder.add_book(db, str(book), metadata={"identifiers": {"bindery": "42"}})
+
+    assert book_id == 3
+    assert duplicate is True
+    db.new_api.add_books.assert_not_called()
+
+
+def test_identifier_search_query_quotes_special_literals():
+    adder = _load_adder()
+
+    assert adder._identifier_search_query("bindery", "42") == "identifiers:=bindery:=42"
+    assert (
+        adder._identifier_search_query("bindery", "series:42 copy")
+        == 'identifiers:=bindery:"=series:42 copy"'
+    )
+    assert (
+        adder._identifier_search_query("bindery", 'quote"slash\\paren(')
+        == 'identifiers:=bindery:"=quote\\"slash\\\\paren("'
+    )
 
 
 def test_add_book_duplicate_with_metadata_does_not_update_existing_book(tmp_path):
@@ -290,7 +351,7 @@ def test_bindery_identifier_prevents_same_title_author_collision(tmp_path):
         ["Anne Sexton"],
         ["William Blake"],
     ]
-    identifiers_by_book = db.new_api.all_field_for("identifiers", first_pass_ids, default_value={})
+    identifiers_by_book = db.new_api.identifiers_for(first_pass_ids)
     assert identifiers_by_book[first_pass_ids[0]]["bindery"] == "715"
     assert identifiers_by_book[first_pass_ids[1]]["bindery"] == "852"
     assert identifiers_by_book[first_pass_ids[2]]["bindery"] == "921"
@@ -314,6 +375,14 @@ def test_bindery_identifier_prevents_same_title_author_collision(tmp_path):
         assert duplicate is True
 
     assert len(db.new_api.add_calls) == 3
+    assert db.new_api.search_calls == [
+        "identifiers:=bindery:=715",
+        "identifiers:=bindery:=852",
+        "identifiers:=bindery:=921",
+        "identifiers:=bindery:=715",
+        "identifiers:=bindery:=852",
+        "identifiers:=bindery:=921",
+    ]
 
 
 def test_bindery_identifier_lookup_failure_does_not_add_book(tmp_path):
@@ -322,8 +391,7 @@ def test_bindery_identifier_lookup_failure_does_not_add_book(tmp_path):
     book.write_bytes(b"stub epub bytes")
 
     db = MagicMock()
-    db.new_api.all_book_ids.return_value = {1}
-    db.new_api.all_field_for.side_effect = RuntimeError("identifier lookup unavailable")
+    db.new_api.search.side_effect = RuntimeError("identifier lookup unavailable")
 
     with pytest.raises(RuntimeError, match="identifier lookup unavailable"):
         adder.add_book(db, str(book), metadata={"identifiers": {"bindery": "42"}})

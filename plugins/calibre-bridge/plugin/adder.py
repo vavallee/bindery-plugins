@@ -30,7 +30,9 @@ def add_book(
     with open(path, "rb") as f:
         mi = get_metadata(f, os.path.splitext(path)[1][1:])
     apply_bindery_metadata(mi, metadata)
-    identifiers = _clean_identifiers(metadata.get("identifiers")) if isinstance(metadata, dict) else {}
+    identifiers = (
+        _clean_identifiers(metadata.get("identifiers")) if isinstance(metadata, dict) else {}
+    )
     bindery_id = identifiers.get("bindery")
     if bindery_id:
         existing = _book_id_for_identifier(api, "bindery", bindery_id)
@@ -139,14 +141,24 @@ def _book_id_for_identifier(api: Any, typ: str, val: str) -> int:
     if not typ or not val:
         return 0
 
-    book_ids = api.all_book_ids()
-    if not book_ids:
+    matches = set(api.search(_identifier_search_query(typ, val)) or ())
+    if not matches:
         return 0
-    identifiers_by_book = api.all_field_for("identifiers", book_ids, default_value={}) or {}
-    for book_id, identifiers in identifiers_by_book.items():
-        if isinstance(identifiers, dict) and identifiers.get(typ) == val:
-            return int(book_id)
-    return 0
+    return min(int(book_id) for book_id in matches)
+
+
+def _identifier_search_query(typ: str, val: str) -> str:
+    return f"identifiers:{_exact_search_literal(typ)}:{_exact_search_literal(val)}"
+
+
+def _exact_search_literal(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    if value[:1] in ("=", "~", "^"):
+        escaped = "\\" + escaped
+    exact = f"={escaped}"
+    if any(ch in value for ch in ' "\\():'):
+        return f'"{exact}"'
+    return exact
 
 
 def _calibre_rating(value: Any) -> int | None:

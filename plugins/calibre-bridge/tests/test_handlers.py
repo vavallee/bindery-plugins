@@ -122,6 +122,7 @@ def test_post_books_happy_path(handler_factory, tmp_path, monkeypatch):
 
     db = MagicMock()
     db.library_path = str(tmp_path)
+    db.new_api.search.return_value = set()
     db.new_api.add_books.return_value = ([123], {})
 
     handler_cls = handler_factory.make_handler(api_key="secret", get_db=lambda: db)
@@ -151,6 +152,7 @@ def test_post_books_applies_metadata(handler_factory, tmp_path):
 
     db = MagicMock()
     db.library_path = str(tmp_path)
+    db.new_api.search.return_value = set()
     db.new_api.add_books.return_value = ([123], {})
 
     handler_cls = handler_factory.make_handler(api_key="secret", get_db=lambda: db)
