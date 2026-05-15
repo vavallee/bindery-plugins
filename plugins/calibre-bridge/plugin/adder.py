@@ -26,13 +26,21 @@ def add_book(
     """
     if ".." in pathlib.Path(path).parts:
         raise ValueError(f"Path traversal rejected: {path!r}")
+    api = db.new_api
     with open(path, "rb") as f:
         mi = get_metadata(f, os.path.splitext(path)[1][1:])
     apply_bindery_metadata(mi, metadata)
+    identifiers = _clean_identifiers(metadata.get("identifiers")) if isinstance(metadata, dict) else {}
+    bindery_id = identifiers.get("bindery")
+    if bindery_id:
+        existing = _book_id_for_identifier(api, "bindery", bindery_id)
+        if existing:
+            return existing, True
+
     fmt = os.path.splitext(path)[1][1:].upper()
-    ids, _dups = db.new_api.add_books(
+    ids, _dups = api.add_books(
         [(mi, {fmt: path})],
-        add_duplicates=False,
+        add_duplicates=bool(bindery_id),
         run_hooks=False,
     )
     if ids:
@@ -45,12 +53,18 @@ def add_book(
                 pass
         return int(ids[0]), False
 
+    if bindery_id:
+        existing = _book_id_for_identifier(api, "bindery", bindery_id)
+        if existing:
+            return existing, True
+        return 0, True
+
     # Duplicate: ``_dups`` is a list of ``(mi, format_map)`` tuples for the
     # input metadata, NOT book ids. We look up the existing book by
     # identical-metadata match so callers still get a usable id back.
-    existing = db.new_api.find_identical_books(mi) or set()
-    if existing:
-        return int(next(iter(existing))), True
+    identical = api.find_identical_books(mi) or set()
+    if identical:
+        return int(next(iter(identical))), True
     return 0, True
 
 
@@ -117,6 +131,22 @@ def _clean_identifiers(value: Any) -> dict[str, str]:
         if clean_key and clean_value:
             out[clean_key] = clean_value
     return out
+
+
+def _book_id_for_identifier(api: Any, typ: str, val: str) -> int:
+    typ = _clean_str(typ)
+    val = _clean_str(val)
+    if not typ or not val:
+        return 0
+
+    book_ids = api.all_book_ids()
+    if not book_ids:
+        return 0
+    identifiers_by_book = api.all_field_for("identifiers", book_ids, default_value={}) or {}
+    for book_id, identifiers in identifiers_by_book.items():
+        if isinstance(identifiers, dict) and identifiers.get(typ) == val:
+            return int(book_id)
+    return 0
 
 
 def _calibre_rating(value: Any) -> int | None:
