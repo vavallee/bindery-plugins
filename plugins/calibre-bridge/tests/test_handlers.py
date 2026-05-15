@@ -21,14 +21,19 @@ def handler_factory(monkeypatch):
     calibre = types.ModuleType("calibre")
     constants = types.ModuleType("calibre.constants")
     constants.numeric_version = (9, 7, 0)
+    utils = types.ModuleType("calibre.utils")
+    date = types.ModuleType("calibre.utils.date")
     ebooks = types.ModuleType("calibre.ebooks")
     metadata = types.ModuleType("calibre.ebooks.metadata")
     meta = types.ModuleType("calibre.ebooks.metadata.meta")
     meta.get_metadata = lambda f, fmt: MagicMock()
+    date.parse_date = lambda value: value
     sys.modules.update(
         {
             "calibre": calibre,
             "calibre.constants": constants,
+            "calibre.utils": utils,
+            "calibre.utils.date": date,
             "calibre.ebooks": ebooks,
             "calibre.ebooks.metadata": metadata,
             "calibre.ebooks.metadata.meta": meta,
@@ -82,6 +87,7 @@ def test_health_endpoint(handler_factory):
         assert payload["plugin_version"]
         assert payload["calibre_version"]
         assert payload["library"] == "/tmp/library"
+        assert "book_metadata" in payload["capabilities"]
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -134,6 +140,50 @@ def test_post_books_happy_path(handler_factory, tmp_path, monkeypatch):
             assert resp.status == 201
             payload = json.loads(resp.read().decode("utf-8"))
         assert payload == {"id": 123, "duplicate": False}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_post_books_applies_metadata(handler_factory, tmp_path):
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub")
+
+    db = MagicMock()
+    db.library_path = str(tmp_path)
+    db.new_api.add_books.return_value = ([123], {})
+
+    handler_cls = handler_factory.make_handler(api_key="secret", get_db=lambda: db)
+    httpd, port = _serve(handler_cls)
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/books",
+            data=json.dumps(
+                {
+                    "path": str(book),
+                    "metadata": {
+                        "title": "Dune",
+                        "authors": ["Frank Herbert"],
+                        "rating": 4.6,
+                        "identifiers": {"bindery": "42"},
+                    },
+                }
+            ).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 201
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload == {"id": 123, "duplicate": False}
+        mi = db.new_api.add_books.call_args.args[0][0][0]
+        assert mi.title == "Dune"
+        assert mi.authors == ["Frank Herbert"]
+        assert mi.rating == 9
+        mi.set_identifiers.assert_called_once_with({"bindery": "42"})
     finally:
         httpd.shutdown()
         httpd.server_close()

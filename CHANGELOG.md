@@ -7,6 +7,16 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.5.0] - Unreleased
+
+#### Added
+
+- `POST /v1/books` now accepts optional Bindery metadata and applies it to
+  the Calibre metadata object before adding the book.
+- `GET /v1/health` now advertises `capabilities: ["book_metadata"]` so
+  Bindery can safely distinguish metadata-capable plugin versions from
+  older path-only releases.
+
 ### [0.4.0] - 2026-05-13
 
 #### Fixed

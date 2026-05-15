@@ -4,7 +4,8 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-PLUGIN_VERSION = "0.4.0"
+PLUGIN_VERSION = "0.5.0"
+CAPABILITIES = ["book_metadata"]
 
 _log = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ def make_handler(
                         "plugin_version": PLUGIN_VERSION,
                         "calibre_version": _calibre_version(),
                         "library": library,
+                        "capabilities": CAPABILITIES,
                     },
                 )
                 return
@@ -108,11 +110,19 @@ def make_handler(
             if not path or not isinstance(path, str):
                 self._send_json(400, {"error": "path required"})
                 return
+            metadata = payload.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                self._send_json(400, {"error": "metadata must be an object"})
+                return
             try:
                 gui = get_gui() if get_gui is not None else None
-                book_id, duplicate = add_book(db, path, gui=gui)
+                book_id, duplicate = add_book(db, path, gui=gui, metadata=metadata)
             except FileNotFoundError as exc:
                 _log.warning("add_book file not found: %s", exc)
+                self._send_json(400, {"error": str(exc)})
+                return
+            except ValueError as exc:
+                _log.warning("add_book bad request path=%r: %s", path, exc)
                 self._send_json(400, {"error": str(exc)})
                 return
             except Exception as exc:  # pragma: no cover - defensive

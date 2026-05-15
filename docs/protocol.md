@@ -37,14 +37,17 @@ Liveness + version probe.
 **Response — 200 OK**
 ```json
 {
-  "plugin_version": "0.1.0",
+  "plugin_version": "0.5.0",
   "calibre_version": "9.7.0",
-  "library": "/media/BOOKS"
+  "library": "/media/BOOKS",
+  "capabilities": ["book_metadata"]
 }
 ```
 
-All three fields are always present. `library` is `""` while the library is
-still initializing or being swapped.
+All fields are always present. `library` is `""` while the library is still
+initializing or being swapped. `capabilities` is a list of optional protocol
+features supported by the plugin. `book_metadata` means `POST /v1/books`
+accepts and applies the optional `metadata` object described below.
 
 ### `POST /v1/books`
 
@@ -58,13 +61,53 @@ into the active library.
 **Request body**
 ```json
 {
-  "path": "/media/BOOKS/Author/Title/book.epub"
+  "path": "/media/BOOKS/Author/Title/book.epub",
+  "metadata": {
+    "title": "Dune",
+    "authors": ["Frank Herbert"],
+    "authorSort": "Herbert, Frank",
+    "description": "Desert planet.",
+    "publisher": "Ace",
+    "publishedDate": "1965-08-01",
+    "genres": ["Science Fiction"],
+    "language": "eng",
+    "series": "Dune Chronicles",
+    "seriesIndex": "1",
+    "rating": 4.6,
+    "identifiers": {
+      "isbn": "9780441172719",
+      "bindery": "42"
+    }
+  }
 }
 ```
 
-| Field  | Type   | Required | Notes                                           |
-|--------|--------|----------|-------------------------------------------------|
-| `path` | string | yes      | Absolute path on the Calibre process filesystem |
+| Field      | Type   | Required | Notes                                           |
+|------------|--------|----------|-------------------------------------------------|
+| `path`     | string | yes      | Absolute path on the Calibre process filesystem |
+| `metadata` | object | no       | Bindery metadata to apply before adding the book |
+
+`metadata` is supported when `GET /v1/health` includes
+`"book_metadata"` in `capabilities`. Older plugins ignore unknown request
+fields, so clients that require metadata SHOULD probe capabilities before
+sending this field.
+
+Supported metadata fields:
+
+| Field           | Type            | Calibre field         |
+|-----------------|-----------------|-----------------------|
+| `title`         | string          | Title                 |
+| `authors`       | string array    | Authors               |
+| `authorSort`    | string          | Author sort           |
+| `description`   | string          | Comments              |
+| `publisher`     | string          | Publisher             |
+| `publishedDate` | string          | Published             |
+| `genres`        | string array    | Tags                  |
+| `language`      | string          | Languages             |
+| `series`        | string          | Series                |
+| `seriesIndex`   | string/number   | Series Index          |
+| `rating`        | number          | Rating, 0-5 stars     |
+| `identifiers`   | object<string>  | Identifiers           |
 
 **Responses**
 
