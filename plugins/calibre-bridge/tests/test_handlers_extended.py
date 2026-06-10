@@ -32,14 +32,19 @@ def handler_factory(monkeypatch):
     calibre = types.ModuleType("calibre")
     constants = types.ModuleType("calibre.constants")
     constants.numeric_version = (9, 7, 0)
+    utils = types.ModuleType("calibre.utils")
+    date = types.ModuleType("calibre.utils.date")
     ebooks = types.ModuleType("calibre.ebooks")
     metadata = types.ModuleType("calibre.ebooks.metadata")
     meta = types.ModuleType("calibre.ebooks.metadata.meta")
     meta.get_metadata = lambda f, fmt: MagicMock()
+    date.parse_date = lambda value: value
     sys.modules.update(
         {
             "calibre": calibre,
             "calibre.constants": constants,
+            "calibre.utils": utils,
+            "calibre.utils.date": date,
             "calibre.ebooks": ebooks,
             "calibre.ebooks.metadata": metadata,
             "calibre.ebooks.metadata.meta": meta,
@@ -212,6 +217,29 @@ def test_post_books_non_string_path_returns_400(handler_factory):
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)
         assert exc_info.value.code == 400
+    finally:
+        _shutdown(httpd)
+
+
+def test_post_books_non_object_metadata_returns_400(handler_factory, tmp_path):
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub")
+
+    db = MagicMock()
+    handler_cls = handler_factory.make_handler(api_key="", get_db=lambda: db)
+    httpd, port = _serve(handler_cls)
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/books",
+            data=json.dumps({"path": str(book), "metadata": []}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc_info.value.code == 400
+        payload = json.loads(exc_info.value.read())
+        assert payload["error"] == "metadata must be an object"
     finally:
         _shutdown(httpd)
 

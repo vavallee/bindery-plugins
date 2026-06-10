@@ -1,4 +1,4 @@
-pluginVersion: "0.1.0"
+pluginVersion: "0.5.0"
 calibreDeploymentName: calibre
 calibreNamespace: default
 pluginDestDir: /config/.config/calibre/plugins

@@ -2,12 +2,12 @@
 
 import importlib
 import importlib.util
+import logging
 import pathlib
 import sys
 import threading
 import types
 from unittest.mock import MagicMock, patch
-
 
 _PLUGIN_DIR = pathlib.Path(__file__).resolve().parent.parent / "plugin"
 
@@ -21,6 +21,7 @@ def _make_qt_stubs():
     class _QWidget:
         def __init__(self, parent=None):
             pass
+
     qt_core.QWidget = _QWidget
 
     for name in ("QFormLayout", "QHBoxLayout", "QSpinBox"):
@@ -43,7 +44,9 @@ def _make_qt_stubs():
     mock_prefs.defaults = {}
     mock_prefs.get = MagicMock(side_effect=lambda k, v=None: mock_prefs_storage.get(k, v))
     mock_prefs.__getitem__ = MagicMock(side_effect=lambda k: mock_prefs_storage.get(k, ""))
-    mock_prefs.__setitem__ = MagicMock(side_effect=lambda k, v: mock_prefs_storage.__setitem__(k, v))
+    mock_prefs.__setitem__ = MagicMock(
+        side_effect=lambda k, v: mock_prefs_storage.__setitem__(k, v)
+    )
     calibre_utils_config.JSONConfig = MagicMock(return_value=mock_prefs)
 
     stubs = {
@@ -79,6 +82,7 @@ def _cleanup(stubs):
 
 # ── load_config ───────────────────────────────────────────────────────────────
 
+
 def test_load_config_returns_defaults():
     stubs = _make_qt_stubs()
     config = _load_config_module(stubs)
@@ -92,6 +96,7 @@ def test_load_config_returns_defaults():
 
 
 # ── ConfigWidget methods — call directly on a mock self ───────────────────────
+
 
 def test_config_widget_toggle_show():
     stubs = _make_qt_stubs()
@@ -172,6 +177,7 @@ def test_config_widget_commit_uses_default_for_empty_bind_host():
 
 # ── BinderyBridgeAction lifecycle ─────────────────────────────────────────────
 
+
 def _make_action_stubs():
     stubs = _make_qt_stubs()
     calibre_gui2 = types.ModuleType("calibre.gui2")
@@ -204,7 +210,9 @@ def _load_init_module(stubs):
     stubs["_mock_server_inst"] = mock_server_inst
     stubs["_mock_load_config"] = mock_load_config
 
-    spec = importlib.util.spec_from_file_location("bindery_bridge_init", _PLUGIN_DIR / "__init__.py")
+    spec = importlib.util.spec_from_file_location(
+        "bindery_bridge_init", _PLUGIN_DIR / "__init__.py"
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     sys.path.pop(0)
@@ -284,13 +292,12 @@ def test_shutting_down_with_no_server():
 
 def test_start_server_logs_error_on_failure():
     """_start_server calls log when server.start() raises."""
-    import logging
     stubs = _make_action_stubs()
     mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
     try:
         action = _make_action(mod, mock_server_cls, mock_cfg)
         mock_server_inst.start.side_effect = OSError("port in use")
-        with patch.object(logging.getLogger("__init__"), "error") as mock_log:
+        with patch.object(logging.getLogger("__init__"), "error"):
             action._start_server()
         assert action._server is None
     finally:

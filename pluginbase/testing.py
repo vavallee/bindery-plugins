@@ -45,6 +45,7 @@ def make_calibre_stub() -> dict[str, Any]:
 
     calibre_utils = types.ModuleType("calibre.utils")
     calibre_utils_config = types.ModuleType("calibre.utils.config")
+    calibre_utils_date = types.ModuleType("calibre.utils.date")
     mock_prefs_storage: dict[str, Any] = {}
     mock_prefs = MagicMock()
     mock_prefs.defaults = {}
@@ -56,6 +57,7 @@ def make_calibre_stub() -> dict[str, Any]:
         side_effect=lambda k, v: mock_prefs_storage.__setitem__(k, v)
     )
     calibre_utils_config.JSONConfig = MagicMock(return_value=mock_prefs)
+    calibre_utils_date.parse_date = MagicMock(side_effect=lambda value: value)
 
     qt = types.ModuleType("qt")
     qt_core = types.ModuleType("qt.core")
@@ -87,6 +89,7 @@ def make_calibre_stub() -> dict[str, Any]:
         "calibre.ebooks.metadata.meta": meta,
         "calibre.utils": calibre_utils,
         "calibre.utils.config": calibre_utils_config,
+        "calibre.utils.date": calibre_utils_date,
         "qt": qt,
         "qt.core": qt_core,
         "_mock_prefs": mock_prefs,

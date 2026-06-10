@@ -17,6 +17,7 @@ customize.InterfaceActionBase = object
 
 utils = _make_module("calibre.utils")
 utils_config = _make_module("calibre.utils.config")
+utils_date = _make_module("calibre.utils.date")
 
 
 class _JSONConfig(dict):
@@ -29,6 +30,7 @@ class _JSONConfig(dict):
 
 
 utils_config.JSONConfig = _JSONConfig
+utils_date.parse_date = lambda value: value
 
 gui2 = _make_module("calibre.gui2")
 gui2_actions = _make_module("calibre.gui2.actions")
