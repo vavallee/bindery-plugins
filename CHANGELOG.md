@@ -17,6 +17,17 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
   Bindery can safely distinguish metadata-capable plugin versions from
   older path-only releases.
 
+#### Fixed
+
+- **GUI did not refresh after a sync** — newly added books only appeared
+  after a manual Ctrl+R. The refresh hook imported `PyQt5.Qt`, which fails on
+  Qt6 Calibre (6+), so the scheduled callback never ran; and even when it did,
+  it called `resort()`, which only re-orders already-loaded rows. Now imports
+  `qt.core` (with a `PyQt5` fallback) and schedules
+  `library_view.model().books_added()` + `tags_view.recount()` on the GUI
+  thread so inserts show up immediately. Duplicate (409) responses skip the
+  refresh.
+
 ### [0.4.0] - 2026-05-13
 
 #### Fixed

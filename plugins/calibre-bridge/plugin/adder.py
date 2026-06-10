@@ -49,13 +49,7 @@ def add_book(
         run_hooks=False,
     )
     if ids:
-        if gui is not None:
-            try:
-                from PyQt5.Qt import QTimer
-
-                QTimer.singleShot(0, gui.library_view.model().resort)
-            except Exception as exc:
-                _log.debug("failed to schedule Calibre library refresh: %s", exc)
+        _schedule_gui_refresh(gui, len(ids))
         return int(ids[0]), False
 
     if bindery_id:
@@ -71,6 +65,40 @@ def add_book(
     if identical:
         return int(next(iter(identical))), True
     return 0, True
+
+
+def _schedule_gui_refresh(gui: Any | None, count: int) -> None:
+    """Make ``count`` freshly-added books show up in the Calibre GUI (#1).
+
+    ``add_books`` runs on the bridge's HTTP thread, so the library view never
+    learns about the new rows until something pokes the model and the user is
+    forced to press Ctrl+R. ``resort()`` (the previous attempt) only re-orders
+    rows that are already loaded; ``books_added()`` is what actually inserts the
+    new ones, and ``tags_view.recount()`` refreshes the tag-browser counts.
+    Both must run on the GUI thread, hence ``QTimer.singleShot(0, ...)``.
+
+    The import is ``qt.core`` (Qt6, Calibre 6+); the old ``PyQt5.Qt`` path
+    silently failed on modern Calibre, which is why no refresh happened at all.
+    """
+    if gui is None:
+        return
+    try:
+        from qt.core import QTimer
+    except Exception:
+        try:
+            from PyQt5.Qt import QTimer  # pre-Qt6 Calibre
+        except Exception as exc:
+            _log.debug("no QTimer available for Calibre GUI refresh: %s", exc)
+            return
+
+    def _refresh() -> None:
+        try:
+            gui.library_view.model().books_added(count)
+            gui.tags_view.recount()
+        except Exception as exc:
+            _log.debug("Calibre GUI refresh failed: %s", exc)
+
+    QTimer.singleShot(0, _refresh)
 
 
 def apply_bindery_metadata(mi: Any, metadata: dict[str, Any] | None) -> None:
