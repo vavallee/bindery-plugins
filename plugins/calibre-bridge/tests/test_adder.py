@@ -397,3 +397,56 @@ def test_bindery_identifier_lookup_failure_does_not_add_book(tmp_path):
         adder.add_book(db, str(book), metadata={"identifiers": {"bindery": "42"}})
 
     db.new_api.add_books.assert_not_called()
+
+
+def _stub_qt_core(monkeypatch):
+    """Install a qt.core stub whose QTimer.singleShot runs the callback inline."""
+    qt = types.ModuleType("qt")
+    qt_core = types.ModuleType("qt.core")
+
+    class _QTimer:
+        @staticmethod
+        def singleShot(_msec, fn):
+            fn()
+
+    qt_core.QTimer = _QTimer
+    monkeypatch.setitem(sys.modules, "qt", qt)
+    monkeypatch.setitem(sys.modules, "qt.core", qt_core)
+
+
+def test_add_book_refreshes_gui_on_insert(tmp_path, monkeypatch):
+    _stub_qt_core(monkeypatch)
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub epub bytes")
+
+    db = MagicMock()
+    db.new_api.search.return_value = set()
+    db.new_api.add_books.return_value = ([42], {})
+    gui = MagicMock()
+
+    book_id, duplicate = adder.add_book(db, str(book), gui=gui)
+
+    assert (book_id, duplicate) == (42, False)
+    # books_added (not resort) is what makes the new row appear; tags recount too.
+    gui.library_view.model().books_added.assert_called_once_with(1)
+    gui.tags_view.recount.assert_called_once_with()
+
+
+def test_add_book_duplicate_does_not_refresh_gui(tmp_path, monkeypatch):
+    _stub_qt_core(monkeypatch)
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub epub bytes")
+
+    db = MagicMock()
+    db.new_api.search.return_value = {9}
+    gui = MagicMock()
+
+    book_id, duplicate = adder.add_book(
+        db, str(book), gui=gui, metadata={"identifiers": {"bindery": "42"}}
+    )
+
+    assert (book_id, duplicate) == (9, True)
+    gui.library_view.model().books_added.assert_not_called()
+    gui.tags_view.recount.assert_not_called()
