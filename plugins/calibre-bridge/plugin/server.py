@@ -8,6 +8,12 @@ from calibre_plugins.bindery_bridge.plugin.handlers import make_handler
 
 _log = logging.getLogger(__name__)
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _is_loopback(bind_host: str) -> bool:
+    return bind_host.strip().lower() in _LOOPBACK_HOSTS
+
 
 class BridgeServer:
     def __init__(self) -> None:
@@ -21,8 +27,25 @@ class BridgeServer:
         api_key: str,
         get_db: Callable[[], Any],
         get_gui: Callable[[], Any] | None = None,
+        ingest_root: str = "",
+        max_body_bytes: int = 64 * 1024 * 1024,
     ) -> None:
-        handler_cls = make_handler(api_key=api_key, get_db=get_db, get_gui=get_gui)
+        # Fail closed on network exposure: a non-loopback bind with no API key
+        # would expose the unauthenticated add endpoint to the network. Refuse
+        # to start rather than silently listening. Loopback binds (local dev)
+        # and any bind with an api_key set are unaffected.
+        if not api_key and not _is_loopback(bind_host):
+            raise ValueError(
+                f"refusing to bind to non-loopback host {bind_host!r} without an api_key — "
+                "set an api_key in the Bindery Bridge config, or bind to 127.0.0.1"
+            )
+        handler_cls = make_handler(
+            api_key=api_key,
+            get_db=get_db,
+            get_gui=get_gui,
+            ingest_root=ingest_root,
+            max_body_bytes=max_body_bytes,
+        )
         self._httpd = ThreadingHTTPServer((bind_host, port), handler_cls)
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,

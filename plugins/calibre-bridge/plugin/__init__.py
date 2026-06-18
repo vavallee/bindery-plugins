@@ -41,6 +41,8 @@ class BinderyBridgeAction(InterfaceAction):
                     api_key=cfg["api_key"],
                     get_db=self._get_db,
                     get_gui=self._get_gui,
+                    ingest_root=cfg.get("ingest_root", ""),
+                    max_body_bytes=int(cfg.get("max_body_bytes", 64 * 1024 * 1024)),
                 )
                 self.gui.status_bar.show_message(
                     f"Bindery Bridge listening on {cfg['bind_host']}:{cfg['port']}",

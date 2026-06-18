@@ -75,6 +75,61 @@ def test_bridge_server_stop_when_not_started(server_module):
     srv.stop()  # must not raise
 
 
+def test_is_loopback_helper(server_module):
+    assert server_module._is_loopback("127.0.0.1")
+    assert server_module._is_loopback("localhost")
+    assert server_module._is_loopback("::1")
+    assert server_module._is_loopback(" 127.0.0.1 ")
+    assert not server_module._is_loopback("0.0.0.0")
+    assert not server_module._is_loopback("192.168.1.10")
+
+
+def test_non_loopback_without_api_key_refuses_to_start(server_module):
+    """Fail closed: binding to a non-loopback host with no api_key would
+    expose the unauthenticated add endpoint, so start() must refuse."""
+    from unittest.mock import MagicMock
+
+    db = MagicMock()
+    srv = server_module.BridgeServer()
+    with pytest.raises(ValueError, match="api_key"):
+        srv.start(port=_free_port(), bind_host="0.0.0.0", api_key="", get_db=lambda: db)
+    # Nothing should have been left listening.
+    assert srv._httpd is None
+
+
+def test_non_loopback_with_api_key_starts(server_module):
+    from unittest.mock import MagicMock
+
+    db = MagicMock()
+    db.library_path = "/tmp/lib"
+    srv = server_module.BridgeServer()
+    port = _free_port()
+    # An api_key is set, so a non-loopback bind is allowed.
+    srv.start(port=port, bind_host="0.0.0.0", api_key="secret", get_db=lambda: db)
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/health")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+    finally:
+        srv.stop()
+
+
+def test_loopback_without_api_key_allowed(server_module):
+    """Local dev: loopback bind with no key is still permitted."""
+    from unittest.mock import MagicMock
+
+    db = MagicMock()
+    db.library_path = "/tmp/lib"
+    srv = server_module.BridgeServer()
+    port = _free_port()
+    srv.start(port=port, bind_host="127.0.0.1", api_key="", get_db=lambda: db)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/health", timeout=5) as resp:
+            assert resp.status == 200
+    finally:
+        srv.stop()
+
+
 def test_bridge_server_double_stop(server_module):
     from unittest.mock import MagicMock
 

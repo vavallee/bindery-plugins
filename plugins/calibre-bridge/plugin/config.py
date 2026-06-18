@@ -7,6 +7,13 @@ DEFAULTS = {
     "port": 8099,
     "bind_host": "0.0.0.0",  # nosec B104 — user-configurable default, not a hardcoded binding
     "api_key": "",
+    # Optional ingest-root restriction. When non-empty, only files whose
+    # resolved real path lives inside this directory may be added. Empty
+    # (the default) preserves the historical behaviour of no root restriction.
+    "ingest_root": "",
+    # Upper bound on request body size to avoid a remote OOM via a large
+    # Content-Length. 64 MiB is comfortably above any metadata payload.
+    "max_body_bytes": 64 * 1024 * 1024,
 }
 
 prefs = JSONConfig("plugins/bindery_bridge")
@@ -30,6 +37,12 @@ class ConfigWidget(QWidget):
 
         self.bind_host_input = QLineEdit(str(prefs.get("bind_host", DEFAULTS["bind_host"])), self)
         layout.addRow("Bind host:", self.bind_host_input)
+
+        self.ingest_root_input = QLineEdit(
+            str(prefs.get("ingest_root", DEFAULTS["ingest_root"])), self
+        )
+        self.ingest_root_input.setPlaceholderText("Leave empty to allow any path")
+        layout.addRow("Ingest root:", self.ingest_root_input)
 
         key_row = QHBoxLayout()
         self.api_key_input = QLineEdit(str(prefs.get("api_key", DEFAULTS["api_key"])), self)
@@ -63,4 +76,5 @@ class ConfigWidget(QWidget):
     def commit(self) -> None:
         prefs["port"] = int(self.port_input.value())
         prefs["bind_host"] = self.bind_host_input.text().strip() or DEFAULTS["bind_host"]
+        prefs["ingest_root"] = self.ingest_root_input.text().strip()
         prefs["api_key"] = self.api_key_input.text().strip()
