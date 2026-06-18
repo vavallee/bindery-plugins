@@ -7,7 +7,7 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
-### [0.5.0] - Unreleased
+### [0.5.0] - 2026-06-18
 
 #### Security
 
