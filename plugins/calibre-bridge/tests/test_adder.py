@@ -123,6 +123,12 @@ class _CollisionDB:
         self.new_api = _CollisionNewAPI()
 
 
+def _make_db():
+    db = MagicMock()
+    db.new_api.add_books.return_value = ([1], [])
+    return db
+
+
 def _metadata_identifiers(mi):
     if not mi.set_identifiers.called:
         return {}
@@ -276,6 +282,16 @@ def test_identifier_search_query_quotes_special_literals():
     )
 
 
+def test_calibre_series_index_parsing():
+    adder = _load_adder()
+    assert adder._calibre_series_index(2) == 2.0
+    assert adder._calibre_series_index("1.5") == 1.5
+    assert adder._calibre_series_index("") is None
+    assert adder._calibre_series_index(None) is None
+    # Unparseable string defaults to None rather than raising.
+    assert adder._calibre_series_index("abc") is None
+
+
 def test_add_book_duplicate_with_metadata_does_not_update_existing_book(tmp_path):
     adder = _load_adder()
     book = tmp_path / "book.epub"
@@ -397,6 +413,86 @@ def test_bindery_identifier_lookup_failure_does_not_add_book(tmp_path):
         adder.add_book(db, str(book), metadata={"identifiers": {"bindery": "42"}})
 
     db.new_api.add_books.assert_not_called()
+
+
+def test_add_book_ingest_root_allows_path_inside(tmp_path):
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub epub bytes")
+
+    db = MagicMock()
+    db.new_api.add_books.return_value = ([42], {})
+
+    book_id, duplicate = adder.add_book(db, str(book), ingest_root=str(tmp_path))
+
+    assert (book_id, duplicate) == (42, False)
+
+
+def test_add_book_ingest_root_rejects_absolute_outside(tmp_path):
+    adder = _load_adder()
+    root = tmp_path / "ingest"
+    root.mkdir()
+    # An absolute path that escapes the configured root — passes the .. check
+    # but must be rejected by the root containment guard.
+    with pytest.raises(ValueError, match="outside ingest root"):
+        adder.add_book(_make_db(), "/etc/passwd", ingest_root=str(root))
+
+
+def test_add_book_ingest_root_rejects_symlink_escape(tmp_path):
+    adder = _load_adder()
+    root = tmp_path / "ingest"
+    root.mkdir()
+    outside = tmp_path / "secret.epub"
+    outside.write_bytes(b"secret")
+    # A symlink that lives inside the root but points outside it. The .. check
+    # and a naive prefix check both pass; resolve() catches the escape.
+    link = root / "link.epub"
+    link.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="outside ingest root"):
+        adder.add_book(_make_db(), str(link), ingest_root=str(root))
+
+
+def test_add_book_empty_ingest_root_allows_absolute(tmp_path):
+    """Backward-compat: with no ingest_root configured, absolute paths inside
+    the system are not rejected by the root guard (the .. check still applies)."""
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub")
+
+    db = MagicMock()
+    db.new_api.add_books.return_value = ([5], {})
+
+    book_id, _duplicate = adder.add_book(db, str(book), ingest_root="")
+    assert book_id == 5
+
+
+def test_add_book_rejects_extensionless_path(tmp_path):
+    adder = _load_adder()
+    book = tmp_path / "book"  # no extension
+    book.write_bytes(b"stub")
+
+    with pytest.raises(ValueError, match="format"):
+        adder.add_book(_make_db(), str(book))
+
+
+def test_add_book_bad_series_index_does_not_fail_add(tmp_path):
+    """An unparseable seriesIndex is an optional field — it must be ignored,
+    not abort the whole add."""
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub")
+
+    db = MagicMock()
+    db.new_api.search.return_value = set()
+    db.new_api.add_books.return_value = ([42], {})
+
+    book_id, duplicate = adder.add_book(
+        db, str(book), metadata={"title": "Dune", "seriesIndex": "abc"}
+    )
+
+    # The add succeeded despite the bad optional field rather than raising.
+    assert (book_id, duplicate) == (42, False)
 
 
 def _stub_qt_core(monkeypatch):

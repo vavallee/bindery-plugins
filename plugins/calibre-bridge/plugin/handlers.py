@@ -37,6 +37,8 @@ def make_handler(
     api_key: str,
     get_db: Callable[[], Any],
     get_gui: Callable[[], Any] | None = None,
+    ingest_root: str = "",
+    max_body_bytes: int = 64 * 1024 * 1024,
 ) -> type:
     from calibre_plugins.bindery_bridge.plugin.adder import add_book
 
@@ -99,7 +101,20 @@ def make_handler(
                 _log.warning("library not ready — rejecting POST /v1/books")
                 self._send_json(503, {"error": "library not ready"})
                 return
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self._send_json(400, {"error": "invalid Content-Length"})
+                return
+            if length > max_body_bytes:
+                _log.warning(
+                    "rejecting oversized body: %d > %d from %s",
+                    length,
+                    max_body_bytes,
+                    self.address_string(),
+                )
+                self._send_json(413, {"error": "payload too large"})
+                return
             raw = self.rfile.read(length) if length > 0 else b""
             try:
                 payload = json.loads(raw.decode("utf-8")) if raw else {}
@@ -116,7 +131,9 @@ def make_handler(
                 return
             try:
                 gui = get_gui() if get_gui is not None else None
-                book_id, duplicate = add_book(db, path, gui=gui, metadata=metadata)
+                book_id, duplicate = add_book(
+                    db, path, gui=gui, metadata=metadata, ingest_root=ingest_root
+                )
             except FileNotFoundError as exc:
                 _log.warning("add_book file not found: %s", exc)
                 self._send_json(400, {"error": str(exc)})

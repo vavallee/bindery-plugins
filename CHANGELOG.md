@@ -9,6 +9,33 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ### [0.5.0] - Unreleased
 
+#### Security
+
+- **Optional ingest-root restriction** — the path guard previously only
+  blocked `..`, so absolute paths (e.g. `/etc/passwd`) and symlink escapes
+  were ingested. A new `ingest_root` config key (default empty) restricts
+  adds to files whose resolved real path lives inside it; symlink escapes are
+  caught via `resolve()`. Empty preserves the historical no-restriction
+  behaviour for backward compatibility. Violations return `400`.
+- **Request body size cap** — `POST /v1/books` read the body using an
+  unbounded `Content-Length`, allowing a remote OOM. A `max_body_bytes`
+  config key (default 64 MiB) now rejects oversized requests with `413`
+  before the body is read.
+- **Fail closed without an api_key** — the server now refuses to start when
+  bound to a non-loopback host (anything other than `127.0.0.1` / `localhost`
+  / `::1`) with an empty `api_key`, instead of silently exposing the
+  unauthenticated add endpoint. Loopback binds and any bind with an api_key
+  set are unaffected.
+
+#### Fixed
+
+- A malformed (non-numeric) `Content-Length` header now returns `400` instead
+  of raising an uncaught `ValueError` that severed the request connection.
+- Extensionless paths are rejected with `400` instead of passing an empty
+  format key to Calibre's `add_books`.
+- An unparseable optional `seriesIndex` is now ignored rather than aborting
+  the entire add, mirroring the existing `rating` handling.
+
 #### Added
 
 - `POST /v1/books` now accepts optional Bindery metadata and applies it to

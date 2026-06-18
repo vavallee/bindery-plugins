@@ -13,12 +13,18 @@ def add_book(
     path: str,
     gui: Any | None = None,
     metadata: dict[str, Any] | None = None,
+    ingest_root: str = "",
 ) -> tuple[int, bool]:
     """Add a book to the Calibre library.
 
     Returns ``(book_id, duplicate)`` where ``book_id`` is the Calibre id of
     the book in the library and ``duplicate`` indicates whether the book
     was already present.
+
+    ``ingest_root`` optionally restricts which files may be ingested: when
+    non-empty, the resolved real path of ``path`` must live inside it
+    (resolving symlinks so an escaping link is rejected). When empty, no
+    root restriction is applied, preserving the historical behaviour.
 
     Runs on the bridge's HTTP thread, so we pass ``run_hooks=False`` to
     avoid triggering Calibre hooks that touch Qt widgets from a non-GUI
@@ -27,8 +33,10 @@ def add_book(
     via ``QTimer.singleShot(0, ...)`` so new books appear in the library
     view without a manual Ctrl+R.
     """
-    if ".." in pathlib.Path(path).parts:
-        raise ValueError(f"Path traversal rejected: {path!r}")
+    _check_ingest_path(path, ingest_root)
+    fmt = os.path.splitext(path)[1][1:].upper()
+    if not fmt:
+        raise ValueError(f"Cannot determine book format from extension: {path!r}")
     api = db.new_api
     with open(path, "rb") as f:
         mi = get_metadata(f, os.path.splitext(path)[1][1:])
@@ -42,7 +50,6 @@ def add_book(
         if existing:
             return existing, True
 
-    fmt = os.path.splitext(path)[1][1:].upper()
     ids, _dups = api.add_books(
         [(mi, {fmt: path})],
         add_duplicates=bool(bindery_id),
@@ -65,6 +72,26 @@ def add_book(
     if identical:
         return int(next(iter(identical))), True
     return 0, True
+
+
+def _check_ingest_path(path: str, ingest_root: str) -> None:
+    """Reject path traversal and, when configured, escapes from ``ingest_root``.
+
+    The ``..`` check stays in place for every request so the rejection
+    message is unchanged when no root is configured (backward-compat). When
+    ``ingest_root`` is set we additionally resolve the real path (following
+    symlinks) and require it to live inside the resolved root, which catches
+    absolute paths and symlink escapes that the ``..`` check alone misses.
+    """
+    if ".." in pathlib.Path(path).parts:
+        raise ValueError(f"Path traversal rejected: {path!r}")
+    root = ingest_root.strip()
+    if not root:
+        return
+    resolved = pathlib.Path(path).resolve()
+    resolved_root = pathlib.Path(root).resolve()
+    if not resolved.is_relative_to(resolved_root):
+        raise ValueError(f"Path outside ingest root: {path!r}")
 
 
 def _schedule_gui_refresh(gui: Any | None, count: int) -> None:
@@ -208,7 +235,12 @@ def _calibre_series_index(value: Any) -> float | None:
     clean = _clean_str(value)
     if not clean:
         return None
-    return float(clean)
+    try:
+        return float(clean)
+    except ValueError:
+        # An unparseable optional field must not fail the whole add — mirror
+        # _calibre_rating and simply ignore it.
+        return None
 
 
 def _parse_calibre_date(value: str) -> Any:

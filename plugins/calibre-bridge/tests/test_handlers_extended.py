@@ -313,6 +313,60 @@ def test_post_books_no_api_key_allows_any_request(handler_factory, tmp_path):
         _shutdown(httpd)
 
 
+def _raw_post(port, headers, body=b""):
+    """Send a hand-built POST so we can supply arbitrary Content-Length values
+    that urllib would otherwise compute for us. Returns the numeric status."""
+    header_lines = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+    request = (
+        f"POST /v1/books HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        f"{header_lines}Connection: close\r\n\r\n"
+    ).encode() + body
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall(request)
+        chunks = []
+        while True:
+            data = sock.recv(4096)
+            if not data:
+                break
+            chunks.append(data)
+    status_line = b"".join(chunks).split(b"\r\n", 1)[0]
+    return int(status_line.split(b" ")[1])
+
+
+def test_post_books_oversized_body_returns_413(handler_factory):
+    db = MagicMock()
+    handler_cls = handler_factory.make_handler(
+        api_key="", get_db=lambda: db, max_body_bytes=16
+    )
+    httpd, port = _serve(handler_cls)
+    try:
+        # Content-Length above the cap is rejected before the body is read.
+        status = _raw_post(
+            port,
+            {"Content-Type": "application/json", "Content-Length": "999999"},
+        )
+        assert status == 413
+        db.new_api.add_books.assert_not_called()
+    finally:
+        _shutdown(httpd)
+
+
+def test_post_books_malformed_content_length_returns_400(handler_factory):
+    db = MagicMock()
+    handler_cls = handler_factory.make_handler(api_key="", get_db=lambda: db)
+    httpd, port = _serve(handler_cls)
+    try:
+        # A non-numeric Content-Length must yield a clean 400, not a severed
+        # connection from an uncaught ValueError on the request thread.
+        status = _raw_post(
+            port,
+            {"Content-Type": "application/json", "Content-Length": "not-a-number"},
+        )
+        assert status == 400
+    finally:
+        _shutdown(httpd)
+
+
 def test_post_books_empty_body_returns_400(handler_factory):
     db = MagicMock()
     handler_cls = handler_factory.make_handler(api_key="", get_db=lambda: db)

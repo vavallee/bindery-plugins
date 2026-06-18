@@ -91,6 +91,8 @@ def test_load_config_returns_defaults():
         assert result["port"] == 8099
         assert result["bind_host"] == "0.0.0.0"
         assert result["api_key"] == ""
+        assert result["ingest_root"] == ""
+        assert result["max_body_bytes"] == 64 * 1024 * 1024
     finally:
         _cleanup(stubs)
 
@@ -144,6 +146,7 @@ def test_config_widget_commit_saves_values():
         self = MagicMock()
         self.port_input.value.return_value = 9090
         self.bind_host_input.text.return_value = "127.0.0.1"
+        self.ingest_root_input.text.return_value = "/srv/ingest"
         self.api_key_input.text.return_value = "mykey"
 
         real_prefs = {}
@@ -152,6 +155,7 @@ def test_config_widget_commit_saves_values():
 
         assert real_prefs["port"] == 9090
         assert real_prefs["bind_host"] == "127.0.0.1"
+        assert real_prefs["ingest_root"] == "/srv/ingest"
         assert real_prefs["api_key"] == "mykey"
     finally:
         _cleanup(stubs)
