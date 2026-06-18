@@ -335,9 +335,7 @@ def _raw_post(port, headers, body=b""):
 
 def test_post_books_oversized_body_returns_413(handler_factory):
     db = MagicMock()
-    handler_cls = handler_factory.make_handler(
-        api_key="", get_db=lambda: db, max_body_bytes=16
-    )
+    handler_cls = handler_factory.make_handler(api_key="", get_db=lambda: db, max_body_bytes=16)
     httpd, port = _serve(handler_cls)
     try:
         # Content-Length above the cap is rejected before the body is read.
