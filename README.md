@@ -16,8 +16,10 @@ codebase.
 `scripts/build_plugin.py` packages a directory under `plugins/` into the zip
 Calibre loads. It writes two files into `dist/`:
 
-- `calibre-bridge-vX.Y.Z.zip`, the plugin itself. It contains only this repo's
-  files: no Calibre code and no third party code is redistributed in it.
+- `calibre-bridge-vX.Y.Z.zip`, the plugin itself, plus `LICENSE` and
+  `COPYRIGHT` copied into the zip root so the licence travels with the
+  artefact. It contains only this repo's files: no Calibre code and no third
+  party code is redistributed in it.
 - `calibre-bridge-vX.Y.Z.zip.sha256`, a `sha256sum -c` compatible sidecar.
 
 The plugin has no runtime dependencies. It uses the Python standard library
@@ -119,10 +121,13 @@ See [`docs/`](docs/) for the HTTP protocol contract and installation tiers.
 
 ## Licensing and attribution
 
-This repo is licensed MIT. See [`LICENSE`](LICENSE).
+This repo is licensed **GPL-3.0 or later**. The full licence text is in
+[`LICENSE`](LICENSE) and the copyright line, the standard notice and the
+reasoning behind the choice are in [`COPYRIGHT`](COPYRIGHT). Both files are
+copied into every release zip.
 
-The plugin is loaded into and runs inside Calibre, and it uses Qt through
-Calibre's bundled copy:
+The reason is that the plugin is loaded into and runs inside Calibre, and it
+uses Qt through Calibre's bundled copy:
 
 - **Calibre** is copyright Kovid Goyal and contributors and is licensed
   **GPL-3.0**. <https://github.com/kovidgoyal/calibre>
@@ -132,14 +137,13 @@ Calibre's bundled copy:
 
 Neither is redistributed in the release zip. The combination happens on your
 machine when Calibre loads the plugin, and that combined work is subject to
-Calibre's terms. If you intend to redistribute a modified plugin, or to embed
-it in something of your own, read GPL-3.0 first. The MIT grant on this repo
-covers this repo's code and cannot grant anything about Calibre's.
+Calibre's terms, which is why this repo carries the licence that combination
+requires rather than one that would advertise permissions it cannot convey.
 
 This project is **not affiliated with, endorsed by, or a product of the Calibre
 project**. "Calibre" is used descriptively, to say what the plugin integrates
 with.
 
-Whether a Calibre plugin must itself be GPL-3.0 is a contested question and an
-open one for this repo. The maintainer is deciding it separately, and the
-`LICENSE` file will not change until then.
+Bindery itself is unaffected and stays MIT. It never links Calibre: it runs
+`calibredb` as a separate process or speaks HTTP to this plugin, and both are
+arm's length interfaces. The two repos are separate for exactly this reason.

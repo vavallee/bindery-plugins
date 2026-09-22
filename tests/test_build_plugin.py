@@ -23,6 +23,16 @@ class DemoBridge(InterfaceActionBase):
 """
 
 
+def make_repo_root(root: pathlib.Path, *, copyright_file: bool = True) -> pathlib.Path:
+    """A stand in for the repository root, holding the licence files."""
+    repo = root / "repo"
+    repo.mkdir(exist_ok=True)
+    (repo / "LICENSE").write_text("GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n")
+    if copyright_file:
+        (repo / "COPYRIGHT").write_text("Copyright (C) 2026 vavallee\n")
+    return repo
+
+
 def make_plugin_tree(root: pathlib.Path) -> pathlib.Path:
     plugin_dir = root / "demo-bridge"
     (plugin_dir / "plugin").mkdir(parents=True)
@@ -156,3 +166,95 @@ def test_the_real_plugin_builds(build_plugin, tmp_path):
     assert "__init__.py" in names
     assert "plugin/handlers.py" in names
     assert not [n for n in names if n.startswith("tests/")]
+
+
+def test_licence_files_travel_in_the_zip(build_plugin, tmp_path):
+    # GPL-3.0 section 4: the licence has to ship with the artefact, and the zip
+    # is what every install tier consumes.
+    plugin_dir = make_plugin_tree(tmp_path)
+    repo_root = make_repo_root(tmp_path)
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    with zipfile.ZipFile(out_zip) as zf:
+        names = zf.namelist()
+        licence = zf.read("LICENSE").decode()
+
+    assert "LICENSE" in names
+    assert "COPYRIGHT" in names
+    assert "GNU GENERAL PUBLIC LICENSE" in licence
+
+
+def test_a_build_without_a_licence_is_refused(build_plugin, tmp_path):
+    plugin_dir = make_plugin_tree(tmp_path)
+    repo_root = tmp_path / "bare"
+    repo_root.mkdir()
+
+    with pytest.raises(SystemExit):
+        build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+
+
+def test_copyright_is_optional(build_plugin, tmp_path):
+    plugin_dir = make_plugin_tree(tmp_path)
+    repo_root = make_repo_root(tmp_path, copyright_file=False)
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    with zipfile.ZipFile(out_zip) as zf:
+        names = zf.namelist()
+
+    assert "LICENSE" in names
+    assert "COPYRIGHT" not in names
+
+
+def test_a_plugin_owned_licence_is_not_overwritten(build_plugin, tmp_path):
+    plugin_dir = make_plugin_tree(tmp_path)
+    (plugin_dir / "LICENSE").write_text("plugin specific terms\n")
+    repo_root = make_repo_root(tmp_path)
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    with zipfile.ZipFile(out_zip) as zf:
+        assert zf.namelist().count("LICENSE") == 1
+        assert zf.read("LICENSE").decode() == "plugin specific terms\n"
+
+
+def test_licence_files_sit_at_the_zip_root(build_plugin, tmp_path):
+    # calibre loads the plugin from the zip root, so the licence has to be
+    # beside __init__.py where anyone unpacking the artefact will see it.
+    plugin_dir = make_plugin_tree(tmp_path)
+    repo_root = make_repo_root(tmp_path)
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    with zipfile.ZipFile(out_zip) as zf:
+        names = zf.namelist()
+
+    assert "__init__.py" in names
+    assert not [n for n in names if n.endswith("/LICENSE") or n.endswith("/COPYRIGHT")]
+
+
+def test_the_checksum_still_covers_the_whole_zip(build_plugin, tmp_path):
+    # The sidecar is computed after the zip is closed, so adding members has to
+    # keep it correct without any change to the Helm chart's verify step.
+    plugin_dir = make_plugin_tree(tmp_path)
+    repo_root = make_repo_root(tmp_path)
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    sidecar = out_zip.parent / (out_zip.name + ".sha256")
+
+    expected = hashlib.sha256(out_zip.read_bytes()).hexdigest()
+    assert sidecar.read_text() == f"{expected}  {out_zip.name}\n"
+
+
+def test_the_real_zip_carries_the_repository_licence(build_plugin, tmp_path):
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    plugin_dir = repo_root / "plugins" / "calibre-bridge"
+    if not plugin_dir.is_dir():
+        pytest.skip("calibre-bridge plugin not present")
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    with zipfile.ZipFile(out_zip) as zf:
+        names = zf.namelist()
+
+    assert "LICENSE" in names
+    # COPYRIGHT arrives with the relicense branch. Assert it whenever the file
+    # is there, so this starts covering it the moment that branch lands.
+    if (repo_root / "COPYRIGHT").is_file():
+        assert "COPYRIGHT" in names
