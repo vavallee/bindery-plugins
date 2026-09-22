@@ -15,6 +15,10 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # Templates use %NAME% markers instead of {name} to avoid brace-escaping issues.
+#
+# Every template is self contained. build_plugin.py zips only the plugin's own
+# directory, so anything a generated plugin imports from the repo root would be
+# missing at runtime and the plugin would fail to load inside Calibre.
 
 PLUGIN_INIT = """\
 from calibre.customize import InterfaceActionBase
@@ -47,7 +51,6 @@ import logging
 import threading
 
 from calibre.gui2.actions import InterfaceAction
-from pluginbase.server import PluginServer
 
 _log = logging.getLogger(__name__)
 
@@ -57,8 +60,9 @@ class %ACTION_CLASS%(InterfaceAction):
     action_spec = ("%DISPLAY_NAME%", None, "Configure %DISPLAY_NAME%", None)
 
     def genesis(self) -> None:
-        from %MODULE_NAME%.plugin.config import load_config
-        from %MODULE_NAME%.plugin.handlers import make_handler
+        from calibre_plugins.%MODULE_NAME%.plugin.config import load_config
+        from calibre_plugins.%MODULE_NAME%.plugin.handlers import make_handler
+        from calibre_plugins.%MODULE_NAME%.plugin.server import PluginServer
 
         self._server = PluginServer()
         self._start_lock = threading.Lock()
@@ -102,7 +106,7 @@ class %ACTION_CLASS%(InterfaceAction):
         return True
 
     def show_dialog(self) -> None:
-        from %MODULE_NAME%.plugin.config import ConfigWidget
+        from calibre_plugins.%MODULE_NAME%.plugin.config import ConfigWidget
         from qt.core import QDialog, QDialogButtonBox, QVBoxLayout
 
         dlg = QDialog(self.gui)
@@ -122,17 +126,79 @@ class %ACTION_CLASS%(InterfaceAction):
             self._start_server()
 """
 
+PLUGIN_SERVER = """\
+import logging
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+_log = logging.getLogger(__name__)
+
+
+class PluginServer:
+    \"\"\"Runs a BaseHTTPRequestHandler subclass in a daemon thread.\"\"\"
+
+    def __init__(self) -> None:
+        self._httpd: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(
+        self,
+        port: int,
+        bind_host: str,
+        handler_cls: type[BaseHTTPRequestHandler],
+        thread_name: str = "plugin-http",
+    ) -> None:
+        self._httpd = ThreadingHTTPServer((bind_host, port), handler_cls)
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, name=thread_name, daemon=True
+        )
+        self._thread.start()
+        _log.info("%s listening on %s:%d", thread_name, bind_host, port)
+
+    def stop(self) -> None:
+        if self._httpd is not None:
+            try:
+                self._httpd.shutdown()
+                self._httpd.server_close()
+            except Exception as exc:
+                _log.error("error stopping plugin server: %s", exc)
+            finally:
+                self._httpd = None
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._httpd is not None
+"""
+
 PLUGIN_HANDLERS = """\
+import hmac
+import json
 import logging
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from pluginbase.http import bad_request, check_bearer, not_found, ok, unauthorized
-
 _log = logging.getLogger(__name__)
 
 PLUGIN_VERSION = "0.1.0"
+
+
+def check_bearer(headers: Any, api_key: str) -> bool:
+    \"\"\"Constant time bearer check. Empty api_key means auth is disabled.
+
+    compare_digest rather than ==, because == on str returns as soon as two
+    bytes differ and that timing tells a caller how much of the key it guessed.
+    \"\"\"
+    if not api_key:
+        return True
+    header: str = headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return False
+    token = header[len("Bearer ") :].strip()
+    return hmac.compare_digest(token.encode("utf-8"), api_key.encode("utf-8"))
 
 
 def make_handler(api_key: str, get_db: Callable[[], Any]) -> type:
@@ -142,7 +208,8 @@ def make_handler(api_key: str, get_db: Callable[[], Any]) -> type:
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             _log.debug(format, *args)
 
-        def _send(self, status: int, body: bytes) -> None:
+        def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+            body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -151,25 +218,22 @@ def make_handler(api_key: str, get_db: Callable[[], Any]) -> type:
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path == "/v1/health":
-                status, body = ok({"version": PLUGIN_VERSION})
-                self._send(status, body)
+                self._send_json(200, {"version": PLUGIN_VERSION})
                 return
-            status, body = not_found()
-            self._send(status, body)
+            self._send_json(404, {"error": "not found", "code": "not_found"})
 
         def do_POST(self) -> None:  # noqa: N802
             if not check_bearer(self.headers, api_key):
-                status, body = unauthorized()
-                self._send(status, body)
+                self._send_json(401, {"error": "unauthorized", "code": "unauthorized"})
                 return
             db = get_db()
             if db is None:
-                status, body = 503, b'{"error": "library not ready"}'
-                self._send(status, body)
+                self._send_json(
+                    503, {"error": "library not ready", "code": "db_unavailable"}
+                )
                 return
             # TODO: implement your endpoint logic here
-            status, body = bad_request("not implemented")
-            self._send(status, body)
+            self._send_json(400, {"error": "not implemented", "code": "invalid_metadata"})
 
     return Handler
 """
@@ -179,7 +243,6 @@ import os
 from typing import Any
 
 from calibre.utils.config import JSONConfig
-from pluginbase.config import BaseConfigWidget
 from qt.core import QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QSpinBox, QWidget
 
 DEFAULTS: dict[str, Any] = {
@@ -197,7 +260,7 @@ def load_config() -> dict[str, Any]:
     return {k: prefs.get(k, v) for k, v in DEFAULTS.items()}
 
 
-class ConfigWidget(BaseConfigWidget, QWidget):
+class ConfigWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QFormLayout(self)
@@ -222,27 +285,72 @@ class ConfigWidget(BaseConfigWidget, QWidget):
     def _generate_key(self) -> None:
         self.api_key_input.setText(os.urandom(32).hex())
 
-    def _save_values(self) -> None:
+    def commit(self) -> None:
+        \"\"\"Called by the Calibre plugin framework when the user clicks OK.\"\"\"
         prefs["port"] = int(self.port_input.value())
         prefs["bind_host"] = self.bind_host_input.text().strip() or DEFAULTS["bind_host"]
         prefs["api_key"] = self.api_key_input.text().strip()
-
-    def _load_values(self) -> None:
-        self.port_input.setValue(int(prefs.get("port", DEFAULTS["port"])))
-        self.bind_host_input.setText(str(prefs.get("bind_host", DEFAULTS["bind_host"])))
-        self.api_key_input.setText(str(prefs.get("api_key", DEFAULTS["api_key"])))
 """
 
 ROOT_CONFTEST = """\
 \"\"\"conftest.py — stub calibre/Qt before pytest collects the plugin package.\"\"\"
-from pluginbase.testing import make_calibre_stub, patch_calibre_modules
 
-patch_calibre_modules(make_calibre_stub())
+import sys
+import types
+
+
+def _module(name):
+    mod = types.ModuleType(name)
+    sys.modules[name] = mod
+    return mod
+
+
+class _JSONConfig(dict):
+    def __init__(self, name):
+        super().__init__()
+        self.defaults = {}
+
+    def get(self, key, default=None):
+        return super().get(key, self.defaults.get(key, default))
+
+
+_module("calibre")
+_module("calibre.customize").InterfaceActionBase = object
+_module("calibre.gui2")
+_module("calibre.gui2.actions").InterfaceAction = object
+_module("calibre.utils")
+_module("calibre.utils.config").JSONConfig = _JSONConfig
+_module("calibre.constants").numeric_version = (9, 0, 0)
+
+_module("qt")
+_qt_core = _module("qt.core")
+for _name in (
+    "QDialog",
+    "QDialogButtonBox",
+    "QFormLayout",
+    "QHBoxLayout",
+    "QLabel",
+    "QLineEdit",
+    "QPushButton",
+    "QSpinBox",
+    "QVBoxLayout",
+    "QWidget",
+):
+    setattr(_qt_core, _name, object)
 """
 
 CONFTEST = """\
-\"\"\"conftest.py — auto-loaded by pytest; provides calibre_stubs fixture.\"\"\"
-from pluginbase.testing import calibre_stubs  # noqa: F401
+\"\"\"conftest.py — auto-loaded by pytest; provides the calibre_stubs fixture.\"\"\"
+
+import pytest
+
+
+@pytest.fixture
+def calibre_stubs():
+    \"\"\"The root conftest already installed the stubs; this is the handle.\"\"\"
+    import sys
+
+    return {name: mod for name, mod in sys.modules.items() if name.startswith("calibre")}
 """
 
 TEST_HANDLERS = """\
@@ -336,6 +444,7 @@ def scaffold(slug: str, port: int) -> None:
         plugin_dir / "__init__.py": f'"""Calibre plugin: {display_name}."""\n',
         plugin_dir / "action.py": _render(PLUGIN_ACTION, ctx),
         plugin_dir / "handlers.py": _render(PLUGIN_HANDLERS, ctx),
+        plugin_dir / "server.py": _render(PLUGIN_SERVER, ctx),
         plugin_dir / "config.py": _render(PLUGIN_CONFIG, ctx),
         tests_dir / "__init__.py": "",
         tests_dir / "conftest.py": _render(CONFTEST, ctx),

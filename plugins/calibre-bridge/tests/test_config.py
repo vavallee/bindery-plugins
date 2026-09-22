@@ -24,7 +24,7 @@ def _make_qt_stubs():
 
     qt_core.QWidget = _QWidget
 
-    for name in ("QFormLayout", "QHBoxLayout", "QSpinBox"):
+    for name in ("QFormLayout", "QHBoxLayout", "QLabel", "QSpinBox"):
         cls = MagicMock(name=name)
         setattr(qt_core, name, cls)
 
@@ -240,6 +240,7 @@ def _make_action(mod, mock_server_cls, mock_load_config):
     action._load_config = mock_load_config
     action._get_db = MagicMock()
     action._get_gui = MagicMock()
+    action._status = MagicMock()
     return action
 
 
@@ -294,8 +295,14 @@ def test_shutting_down_with_no_server():
         _cleanup_action(stubs)
 
 
-def test_start_server_logs_error_on_failure():
-    """_start_server calls log when server.start() raises."""
+def test_start_server_falls_back_to_a_degraded_server():
+    """A refused start must stay visible, not just vanish.
+
+    0.5.0 logged the error, showed a five second Calibre status bar toast and
+    closed the port. On a headless or KasmVNC install nobody saw the toast and
+    Bindery only ever reported connection refused, so neither side named the
+    api_key. Now the same port serves a health only explanation.
+    """
     stubs = _make_action_stubs()
     mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
     try:
@@ -303,6 +310,222 @@ def test_start_server_logs_error_on_failure():
         mock_server_inst.start.side_effect = OSError("port in use")
         with patch.object(logging.getLogger("__init__"), "error"):
             action._start_server()
+        mock_server_inst.start_degraded.assert_called_once()
+        assert mock_server_inst.start_degraded.call_args.kwargs["reason"] == "port in use"
+        action._status.set_degraded.assert_called_with("port in use")
+        assert action._server is mock_server_inst
+    finally:
+        _cleanup_action(stubs)
+
+
+def test_start_server_gives_up_when_the_degraded_server_also_fails():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        mock_server_inst.start.side_effect = OSError("port in use")
+        mock_server_inst.start_degraded.side_effect = OSError("port in use")
+        with patch.object(logging.getLogger("__init__"), "error"):
+            action._start_server()
         assert action._server is None
     finally:
+        _cleanup_action(stubs)
+
+
+# ── ConfigWidget construction, including the persistent status line ───────────
+
+
+def test_config_widget_builds_every_row():
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        stubs["_mock_prefs_storage"].update(
+            {"port": 8123, "bind_host": "10.0.0.5", "ingest_root": "/srv/books", "api_key": "k"}
+        )
+        widget = config.ConfigWidget()
+        layout = config.QFormLayout.return_value
+        labels = [call.args[0] for call in layout.addRow.call_args_list]
+        assert labels == [
+            "Status:",
+            "Listen port:",
+            "Bind host:",
+            "Ingest root:",
+            "API key:",
+        ]
+        widget.port_input.setRange.assert_called_with(1, 65535)
+        widget.port_input.setValue.assert_called_with(8123)
+        widget.status_label.setWordWrap.assert_called_with(True)
+        widget.ingest_root_input.setPlaceholderText.assert_called_with(
+            "Leave empty to allow any path"
+        )
+        widget.api_key_input.setEchoMode.assert_called_with(config.QLineEdit.EchoMode.Password)
+        assert widget._show_btn.setCheckable.call_args.args == (True,)
+    finally:
+        _cleanup(stubs)
+
+
+def test_status_summary_falls_back_when_the_server_module_is_absent():
+    """The dialog can be opened from Preferences before genesis has ever run."""
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        sys.modules.pop("calibre_plugins.bindery_bridge.plugin", None)
+        assert config._status_summary() == "Not running"
+    finally:
+        _cleanup(stubs)
+
+
+def test_status_summary_reads_the_status_module():
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        calibre_plugins = types.ModuleType("calibre_plugins")
+        bbridge = types.ModuleType("calibre_plugins.bindery_bridge")
+        bplugin = types.ModuleType("calibre_plugins.bindery_bridge.plugin")
+        status = types.ModuleType("calibre_plugins.bindery_bridge.plugin.status")
+        status.summary = lambda: "Not listening for books: no api_key set"
+        bplugin.status = status
+        sys.modules.update(
+            {
+                "calibre_plugins": calibre_plugins,
+                "calibre_plugins.bindery_bridge": bbridge,
+                "calibre_plugins.bindery_bridge.plugin": bplugin,
+                "calibre_plugins.bindery_bridge.plugin.status": status,
+            }
+        )
+        try:
+            assert config._status_summary() == "Not listening for books: no api_key set"
+        finally:
+            for name in (
+                "calibre_plugins.bindery_bridge.plugin.status",
+                "calibre_plugins.bindery_bridge.plugin",
+                "calibre_plugins.bindery_bridge",
+                "calibre_plugins",
+            ):
+                sys.modules.pop(name, None)
+    finally:
+        _cleanup(stubs)
+
+
+# ── BinderyBridgeAction: the rest of the lifecycle ───────────────────────────
+
+
+def test_genesis_wires_the_action_and_starts_the_server():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        plugin_pkg = sys.modules["calibre_plugins.bindery_bridge.plugin"]
+        config_mod = types.ModuleType("calibre_plugins.bindery_bridge.plugin.config")
+        config_mod.load_config = mock_cfg
+        server_mod = types.ModuleType("calibre_plugins.bindery_bridge.plugin.server")
+        server_mod.BridgeServer = mock_server_cls
+        status_mod = types.ModuleType("calibre_plugins.bindery_bridge.plugin.status")
+        plugin_pkg.config = config_mod
+        plugin_pkg.server = server_mod
+        plugin_pkg.status = status_mod
+        sys.modules["calibre_plugins.bindery_bridge.plugin.config"] = config_mod
+        sys.modules["calibre_plugins.bindery_bridge.plugin.server"] = server_mod
+        sys.modules["calibre_plugins.bindery_bridge.plugin.status"] = status_mod
+
+        action = mod.BinderyBridgeAction.__new__(mod.BinderyBridgeAction)
+        action.gui = MagicMock()
+        action.qaction = MagicMock()
+        action.genesis()
+
+        action.qaction.triggered.connect.assert_called_once_with(action.show_dialog)
+        mock_server_inst.start.assert_called_once()
+        assert action._status is status_mod
+        assert action._server is mock_server_inst
+    finally:
+        for name in (
+            "calibre_plugins.bindery_bridge.plugin.config",
+            "calibre_plugins.bindery_bridge.plugin.server",
+            "calibre_plugins.bindery_bridge.plugin.status",
+        ):
+            sys.modules.pop(name, None)
+        _cleanup_action(stubs)
+
+
+def test_get_db_returns_none_when_the_gui_has_no_library():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        action.gui = MagicMock()
+        action.gui.current_db = "a library"
+        assert mod.BinderyBridgeAction._get_db(action) == "a library"
+        assert mod.BinderyBridgeAction._get_gui(action) is action.gui
+
+        broken = MagicMock()
+        type(broken).current_db = property(lambda self: (_ for _ in ()).throw(RuntimeError()))
+        action.gui = broken
+        assert mod.BinderyBridgeAction._get_db(action) is None
+    finally:
+        _cleanup_action(stubs)
+
+
+def test_library_changed_is_a_no_op():
+    """_get_db reads gui.current_db live, so a swap needs no bookkeeping here."""
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        assert action.library_changed(MagicMock()) is None
+    finally:
+        _cleanup_action(stubs)
+
+
+def _patch_dialog_stubs(stubs, accepted):
+    qt_core = stubs["qt.core"]
+    dialog_cls = MagicMock(name="QDialog")
+    dialog = dialog_cls.return_value
+    dialog_cls.DialogCode = MagicMock()
+    dialog_cls.DialogCode.Accepted = 1
+    dialog_cls.DialogCode.Rejected = 0
+    dialog.exec_.return_value = 1 if accepted else 0
+    qt_core.QDialog = dialog_cls
+    qt_core.QDialogButtonBox = MagicMock(name="QDialogButtonBox")
+    qt_core.QVBoxLayout = MagicMock(name="QVBoxLayout")
+    return dialog
+
+
+def _install_config_module(stubs, widget):
+    plugin_pkg = sys.modules["calibre_plugins.bindery_bridge.plugin"]
+    config_mod = types.ModuleType("calibre_plugins.bindery_bridge.plugin.config")
+    config_mod.ConfigWidget = MagicMock(return_value=widget)
+    plugin_pkg.config = config_mod
+    sys.modules["calibre_plugins.bindery_bridge.plugin.config"] = config_mod
+
+
+def test_show_dialog_commits_and_restarts_on_ok():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        _patch_dialog_stubs(stubs, accepted=True)
+        widget = MagicMock()
+        _install_config_module(stubs, widget)
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        action._server = mock_server_inst
+        action.show_dialog()
+        widget.commit.assert_called_once()
+        mock_server_inst.stop.assert_called_once()
+    finally:
+        sys.modules.pop("calibre_plugins.bindery_bridge.plugin.config", None)
+        _cleanup_action(stubs)
+
+
+def test_show_dialog_changes_nothing_on_cancel():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        _patch_dialog_stubs(stubs, accepted=False)
+        widget = MagicMock()
+        _install_config_module(stubs, widget)
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        action._server = mock_server_inst
+        action.show_dialog()
+        widget.commit.assert_not_called()
+        mock_server_inst.stop.assert_not_called()
+    finally:
+        sys.modules.pop("calibre_plugins.bindery_bridge.plugin.config", None)
         _cleanup_action(stubs)

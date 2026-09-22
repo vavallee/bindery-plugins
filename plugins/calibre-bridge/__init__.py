@@ -4,12 +4,12 @@ from calibre.customize import InterfaceActionBase
 class BinderyBridge(InterfaceActionBase):
     name = "Bindery Bridge"
     description = (
-        "Exposes a versioned HTTP API that lets Bindery add imported books "
-        "into the running Calibre library without shelling out to calibredb."
+        "Exposes a versioned HTTP API that lets Bindery add and update books "
+        "in the running Calibre library without shelling out to calibredb."
     )
     supported_platforms = ["windows", "osx", "linux"]
     author = "vavallee"
-    version = (0, 5, 0)
+    version = (0, 6, 0)
     minimum_calibre_version = (6, 0, 0)
 
     actual_plugin = "calibre_plugins.bindery_bridge.plugin:BinderyBridgeAction"

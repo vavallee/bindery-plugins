@@ -9,7 +9,7 @@ codebase.
 
 | Name             | Target       | Path                        | Status  |
 |------------------|--------------|-----------------------------|---------|
-| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.5.0  |
+| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.6.0  |
 
 ## What this repo builds
 
@@ -116,6 +116,11 @@ For a GitOps and ArgoCD approach using a Helm init container, see
   ```
   helm template ci charts/calibre-plugin-installer
   ```
+
+Everything a plugin imports must live inside its own `plugins/<name>/`
+directory: `build_plugin.py` zips that directory and nothing else, so an
+import from elsewhere in the repo passes pytest here and then fails to load
+inside Calibre. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 See [`docs/`](docs/) for the HTTP protocol contract and installation tiers.
 

@@ -1,7 +1,15 @@
 import os
 
 from calibre.utils.config import JSONConfig
-from qt.core import QFormLayout, QHBoxLayout, QLineEdit, QPushButton, QSpinBox, QWidget
+from qt.core import (
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSpinBox,
+    QWidget,
+)
 
 DEFAULTS = {
     "port": 8099,
@@ -25,10 +33,33 @@ def load_config() -> dict:
     return {k: prefs.get(k, v) for k, v in DEFAULTS.items()}
 
 
+def _status_summary() -> str:
+    """One line describing what the bridge server is doing right now.
+
+    Imported lazily: Calibre can open this dialog from Preferences before the
+    interface action's genesis has ever run, and a config dialog must not fail
+    to open because the server module is not loaded yet.
+    """
+    try:
+        from calibre_plugins.bindery_bridge.plugin import status
+
+        return str(status.summary())
+    except Exception:
+        return "Not running"
+
+
 class ConfigWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QFormLayout(self)
+
+        # A persistent report of what the server is actually doing. The start
+        # failure used to be a five second status bar toast and nothing else,
+        # so on a headless install nobody ever saw it and Bindery only got
+        # connection refused. This line survives until the next start attempt.
+        self.status_label = QLabel(_status_summary(), self)
+        self.status_label.setWordWrap(True)
+        layout.addRow("Status:", self.status_label)
 
         self.port_input = QSpinBox(self)
         self.port_input.setRange(1, 65535)
