@@ -11,7 +11,7 @@ ignore = ["E501"]
 "plugins/calibre-bridge/tests/*" = ["E402", "F401"]
 
 [tool.pytest.ini_options]
-testpaths = ["plugins/calibre-bridge/tests"]
+testpaths = ["plugins/calibre-bridge/tests", "tests"]
 addopts = "-ra"
 
 [tool.mypy]
