@@ -42,8 +42,8 @@ jobs:
         # and development tooling. It is allowed to fail the build: an audit
         # that cannot fail is not an audit.
         run: |
-          pip install -r .github/requirements-dev.txt
-          pip-audit --strict --requirement .github/requirements-dev.txt
+          pip install -r requirements-dev.txt
+          pip-audit --strict --requirement requirements-dev.txt
 
   secrets:
     name: Secret scan (Gitleaks)

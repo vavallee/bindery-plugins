@@ -22,7 +22,7 @@ Calibre loads. It writes two files into `dist/`:
 
 The plugin has no runtime dependencies. It uses the Python standard library
 plus what Calibre provides in process. Everything in
-`.github/requirements-dev.txt` is CI and development tooling and is not shipped.
+`requirements-dev.txt` is CI and development tooling and is not shipped.
 
 ## How a release is produced
 
@@ -94,7 +94,7 @@ For a GitOps and ArgoCD approach using a Helm init container, see
 ## Development
 
 - Python 3.10 or newer. Install the pinned tooling with
-  `pip install -r .github/requirements-dev.txt`.
+  `pip install -r requirements-dev.txt`.
 - Run every test:
   ```
   pytest

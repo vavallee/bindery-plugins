@@ -26,11 +26,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: .github/requirements-dev.txt
+          cache-dependency-path: requirements-dev.txt
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r .github/requirements-dev.txt
+          pip install -r requirements-dev.txt
       # scripts/ runs on the CI runner, not inside Calibre, so it is tested on
       # the runner interpreter rather than the Calibre matrix.
       - name: Run tests
@@ -45,11 +45,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: .github/requirements-dev.txt
+          cache-dependency-path: requirements-dev.txt
       - name: Install linters
         run: |
           python -m pip install --upgrade pip
-          pip install -r .github/requirements-dev.txt
+          pip install -r requirements-dev.txt
       - name: ruff check
         run: ruff check plugins/ scripts/ tests/
       - name: ruff format --check

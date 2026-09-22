@@ -1,10 +1,10 @@
 version: 2
 updates:
   - package-ecosystem: pip
-    # The manifest lives in .github, not the repo root. Pointing this at "/"
-    # matched nothing, because there is no root requirements file and
-    # pyproject.toml declares no dependencies.
-    directory: /.github
+    # This matched nothing until requirements-dev.txt existed: pyproject.toml
+    # declares no dependencies and the plugin has none at runtime, so there was
+    # no manifest here for dependabot to read.
+    directory: /
     schedule:
       interval: weekly
       day: monday
