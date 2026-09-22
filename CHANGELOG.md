@@ -7,6 +7,121 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.6.0] - 2026-09-22
+
+#### Fixed
+
+- **The duplicate explosion.** `add_books` is called with
+  `add_duplicates=True` whenever Bindery supplies its own `bindery`
+  identifier, and the only dedupe left was an exact search for that
+  identifier, which by definition never matches a library Bindery did not
+  fill. The first "Push all to Calibre" against a library populated by
+  Calibre Web Automated, by `calibredb`, by hand or by plugin 0.4.0 therefore
+  cloned the whole library and reported it as success. There is now a fallback
+  ladder: the `bindery` identifier, then `isbn`, `asin`, `google` and
+  `hardcover`, then `find_identical_books`. Any hit returns 409 with the
+  existing id.
+
+  The original reason for `add_duplicates=True` is intact. Calibre's own check
+  behind `add_duplicates=False` is `Cache.has_book`, which matches on title
+  alone and would collapse three different poets' "The Complete Poems" into
+  one row. `find_identical_books` is a different heuristic that requires a
+  superset of the authors as well as a fuzzy title match, which is why it is
+  safe as the last rung.
+
+- **The identifier search was malformed whenever it needed quoting.** An exact
+  search built for a value containing a space, a parenthesis or a colon was
+  emitted as `identifiers:=bindery:"=series:42 copy"`. Calibre's lexer matches
+  a bare word with `[^"()\s]+`, which stops at a quote, so that parsed as two
+  ANDed terms rather than one and matched nothing. The quote belongs around
+  the whole term: `identifiers:"=bindery:=series:42 copy"`. Two related fixes
+  in the same helper: a value starting with `=`, `~` or `^` no longer gets a
+  backslash that `_matchkind` leaves in the compared literal, and a value of
+  `true` or `false` is refused outright because `KeyPairSearch` turns it into
+  a test for the key's existence and would adopt an unrelated book.
+
+  The common case, a numeric `bindery` id, was correct before and after.
+
+#### Security
+
+- **Timing safe bearer token comparison.** The check used `!=` on `str`, which
+  returns as soon as two bytes differ and leaks the length of the matching
+  prefix. Now `hmac.compare_digest`.
+
+- **`pluginbase/` removed.** It had zero imports, was excluded from coverage,
+  and carried a second copy of the bearer check that still used `==`. It also
+  could never have shipped: `build_plugin.py` zips only `plugins/<name>/`, so
+  a plugin importing it would have failed to load inside Calibre.
+  `scaffold_plugin.py` generated exactly such plugins and now generates self
+  contained ones.
+
+#### Added
+
+- **Machine readable error codes.** Every error response carries a `code`
+  beside the existing `error` string: `unauthorized`, `db_unavailable`,
+  `invalid_json`, `invalid_metadata`, `path_not_found`, `path_forbidden`,
+  `bad_format`, `body_too_large`, `not_found`, `internal`. The `error` string
+  is unchanged in meaning because older clients read it. The case that
+  motivated this: a wrong container mount and a malformed metadata object were
+  both a bare 400, so Bindery logged "metadata payload rejected" and re-sent
+  the whole request for what was a filesystem problem.
+
+- **`GET /v1/paths?path=<abs path>`** (authenticated) reports
+  `{"path", "exists", "readable", "isDir"}` so the cross container mount
+  mismatch can be diagnosed at setup time instead of after a library wide push
+  has already failed. It never opens the file and it applies the same
+  `ingest_root` restriction as an add. It deliberately does not need a
+  database, so it still answers during a library swap.
+
+- **`metadata.coverPath`** is read and applied. It was silently dropped
+  before, and the push still returned 201. The path is validated exactly like
+  the book path and capped at 16 MiB. A cover problem never fails the add: the
+  book is added without it and the response carries `cover_applied: false`.
+
+- **`PATCH /v1/books/{id}`** (authenticated) applies metadata to a book
+  already in the library, so a 409 is no longer a dead end. The rule is fill
+  only: a field is written when the Calibre row has nothing in it, a field the
+  row already carries is left alone, and nothing is ever cleared. Calibre's
+  `Unknown` placeholders count as empty, identifiers merge key by key, and
+  `coverPath` is ignored.
+
+- **A refused start is now discoverable.** When the server refuses to bind (a
+  non loopback host with no `api_key`) it serves a health only endpoint on the
+  same port reporting `status: "degraded"` with the reason, and answers adds
+  with 401 carrying that reason, which is the status Bindery already renders
+  as "check api_key in Settings". Before this the only signal was a five
+  second Calibre status bar toast, invisible on a headless or KasmVNC install,
+  and Bindery saw nothing but connection refused. The same state is shown as a
+  persistent line in the plugin's configuration dialog.
+
+- **`Retry-After` on every 503**, so a client has a concrete backoff hint for
+  the library swap window.
+
+- `GET /v1/health` advertises `cover`, `path_probe`, `metadata_update` and
+  `error_codes` alongside `book_metadata`.
+
+#### Changed
+
+- `docs/protocol.md` rewritten to describe what the code does. It documented a
+  `/v2/` plus `Deprecation` and `Sunset` policy neither side has ever
+  implemented, said 409 came from `add_duplicates=false`, never mentioned the
+  413 added in 0.5.0, and never mentioned `coverPath`. It now also states the
+  client's 30 second timeout and the 503 backoff expectation.
+
+- Test suite goes from 65 tests to 168. `scripts/build_plugin.py` and
+  `scripts/scaffold_plugin.py` had no tests at all and are now at 98%; the
+  `plugin/__init__.py` lifecycle and the `config.py` widget were at 60% and
+  51% and are now at 100%.
+
+#### Compatibility
+
+Every addition is additive. A Bindery speaking 0.4.0 or 0.5.0 sees the same
+status codes and the same response bodies plus fields it ignores, never sends
+`coverPath`, and never calls the two new endpoints. The one behaviour change
+an old client can observe is the dedupe ladder turning what used to be a
+silent duplicate into a 409 with the existing id, which such clients already
+treat as "already in Calibre".
+
 ### [0.5.0] - 2026-06-18
 
 #### Security

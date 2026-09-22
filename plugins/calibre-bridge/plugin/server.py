@@ -4,7 +4,8 @@ from collections.abc import Callable
 from http.server import ThreadingHTTPServer
 from typing import Any
 
-from calibre_plugins.bindery_bridge.plugin.handlers import make_handler
+from calibre_plugins.bindery_bridge.plugin import status
+from calibre_plugins.bindery_bridge.plugin.handlers import make_degraded_handler, make_handler
 
 _log = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class BridgeServer:
     def __init__(self) -> None:
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self.degraded_reason = ""
 
     def start(
         self,
@@ -46,6 +48,28 @@ class BridgeServer:
             ingest_root=ingest_root,
             max_body_bytes=max_body_bytes,
         )
+        self._serve(handler_cls, port, bind_host)
+        status.set_running(f"{bind_host}:{port}")
+        _log.info("calibre-bridge listening on %s:%d", bind_host, port)
+
+    def start_degraded(self, port: int, bind_host: str, reason: str) -> None:
+        """Serve health only, explaining why the real bridge is not listening.
+
+        A refusal to start used to reach the operator as a five second Calibre
+        status bar toast and nothing else, so on a headless or KasmVNC install
+        the only symptom was Bindery reporting connection refused, with neither
+        side naming the api_key. This keeps the port answering: health reports
+        ``status: "degraded"`` with the reason, and an add attempt gets a 401
+        carrying it, which is the status Bindery already renders as "check
+        api_key in Settings". No library access and no capabilities, so nothing
+        the refusal protects is exposed.
+        """
+        self.degraded_reason = reason
+        self._serve(make_degraded_handler(reason), port, bind_host)
+        status.set_degraded(reason, f"{bind_host}:{port}")
+        _log.error("calibre-bridge degraded on %s:%d: %s", bind_host, port, reason)
+
+    def _serve(self, handler_cls: type, port: int, bind_host: str) -> None:
         self._httpd = ThreadingHTTPServer((bind_host, port), handler_cls)
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
@@ -53,7 +77,6 @@ class BridgeServer:
             daemon=True,
         )
         self._thread.start()
-        _log.info("calibre-bridge listening on %s:%d", bind_host, port)
 
     def stop(self) -> None:
         if self._httpd is not None:
@@ -68,3 +91,4 @@ class BridgeServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+        status.set_stopped(self.degraded_reason)

@@ -4,7 +4,6 @@
 
 ```
 bindery-plugins/
-├── pluginbase/          # Shared helpers (http, server, config, testing)
 ├── plugins/
 │   └── calibre-bridge/  # Calibre plugin (plugin/, tests/, conftest.py)
 ├── scripts/
@@ -23,39 +22,36 @@ This creates `plugins/my-plugin/` with:
 - `__init__.py` — Calibre plugin entry point (`InterfaceActionBase` subclass)
 - `conftest.py` — stubs calibre/Qt at collection time (required)
 - `plugin/action.py` — `InterfaceAction` with server lifecycle
-- `plugin/handlers.py` — HTTP handler using `pluginbase.http`
-- `plugin/config.py` — `BaseConfigWidget` subclass
-- `tests/conftest.py` — re-exports `calibre_stubs` fixture
+- `plugin/server.py`: `PluginServer`, the threaded HTTP server wrapper
+- `plugin/handlers.py`: HTTP handler with a timing safe bearer check
+- `plugin/config.py`: Qt config widget with a `commit()` method
+- `tests/conftest.py`: the `calibre_stubs` fixture
 - `tests/test_handlers.py` — starter test
 
 ## Plugin anatomy
 
-Use `pluginbase` instead of copy-pasting boilerplate:
+**Every module a plugin imports must live inside that plugin's own
+directory.** `scripts/build_plugin.py` zips `plugins/<name>/**` and nothing
+else, so an import from anywhere else in this repo resolves when you run
+pytest and then fails when Calibre loads the released zip. A shared
+`pluginbase/` package existed until 0.6.0 for exactly this purpose and was
+removed once it became clear it could never have shipped: nothing imported it,
+it was excluded from coverage, and it carried a second copy of the bearer
+check that still used `==` after the real one was fixed. One implementation,
+inside the plugin, is the rule.
 
-| Module | What it provides |
-|--------|-----------------|
-| `pluginbase.http` | `ok()`, `bad_request()`, `check_bearer()`, etc. |
-| `pluginbase.server` | `PluginServer` (start/stop/is_running) |
-| `pluginbase.config` | `BaseConfigWidget` — implement `_save_values` / `_load_values` |
-| `pluginbase.testing` | `calibre_stubs` fixture, `make_calibre_stub()`, `load_plugin_module()` |
+If two plugins ever do need to share code, the honest options are to vendor it
+into each plugin directory or to teach `build_plugin.py` to copy a shared
+package into the zip. Pick one deliberately rather than relying on the repo
+root being importable.
 
 ## Tests
 
 ### conftest setup
 
-Every plugin directory needs a root-level `conftest.py` that patches
-calibre/Qt before pytest collects the package:
-
-```python
-from pluginbase.testing import make_calibre_stub, patch_calibre_modules
-patch_calibre_modules(make_calibre_stub())
-```
-
-The `tests/conftest.py` re-exports the per-test fixture:
-
-```python
-from pluginbase.testing import calibre_stubs  # noqa: F401
-```
+Every plugin directory needs a root-level `conftest.py` that stubs calibre and
+Qt before pytest collects the package, and a `tests/conftest.py` with the
+fixtures the tests share. `scaffold_plugin.py` generates both.
 
 ### Running tests
 
