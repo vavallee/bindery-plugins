@@ -1,0 +1,16 @@
+# CI and development tooling. The plugin itself has zero runtime dependencies
+# (standard library plus whatever Calibre provides), so nothing here is shipped
+# in the release zip.
+#
+# This file exists so the pip Dependabot ecosystem and pip-audit have something
+# real to look at. Keep the pins exact: a floating version turns a dependency
+# audit into a moving target.
+#
+# Licences, checked before pinning: pytest MIT, pytest-cov MIT, bandit
+# Apache-2.0, ruff MIT, mypy MIT, pip-audit Apache-2.0. All permissive.
+pytest==9.1.1
+pytest-cov==7.1.0
+bandit==1.9.4
+ruff==0.16.8
+mypy==2.3.1
+pip-audit==2.10.1

@@ -9,7 +9,7 @@ spec:
         elements:
           - cluster: homelab
             namespace: default
-            pluginVersion: "0.1.0"
+            pluginVersion: "0.5.0"
   template:
     metadata:
       name: "calibre-plugin-installer-{{cluster}}"
@@ -25,8 +25,14 @@ spec:
             pluginVersion: "{{pluginVersion}}"
             calibreDeploymentName: calibre
             calibreNamespace: "{{namespace}}"
-            pluginDestDir: /config/.config/calibre/plugins
+            calibreHome: /config
+            calibreConfigDir: /config/.config/calibre
             volumeName: config
+            calibreImage:
+              # Must match the image the Calibre Deployment runs; it supplies
+              # the calibre-customize CLI that registers the plugin.
+              repository: lscr.io/linuxserver/calibre
+              tag: latest
       destination:
         server: https://kubernetes.default.svc
         namespace: "{{namespace}}"

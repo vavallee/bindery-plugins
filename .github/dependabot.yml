@@ -1,6 +1,9 @@
 version: 2
 updates:
   - package-ecosystem: pip
+    # This matched nothing until requirements-dev.txt existed: pyproject.toml
+    # declares no dependencies and the plugin has none at runtime, so there was
+    # no manifest here for dependabot to read.
     directory: /
     schedule:
       interval: weekly

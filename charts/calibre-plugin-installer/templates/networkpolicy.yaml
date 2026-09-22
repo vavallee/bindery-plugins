@@ -1,4 +1,9 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- $ing := .Values.networkPolicy.ingress }}
+{{- $eg := .Values.networkPolicy.egress }}
+{{- if and $ing.enabled (not $ing.from) }}
+{{- fail "networkPolicy.ingress.from is empty. An ingress rule with no peers admits every pod in the cluster to the bridge port, so the chart refuses to render one. List the peers allowed to reach the bridge, or set networkPolicy.ingress.enabled=false." }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -9,23 +14,49 @@ spec:
     matchLabels:
       {{- toYaml .Values.selectorLabels | nindent 6 }}
   policyTypes:
+    {{- if $ing.enabled }}
+    - Ingress
+    {{- end }}
+    {{- if $eg.enabled }}
     - Egress
+    {{- end }}
+  {{- if $ing.enabled }}
+  ingress:
+    # The bridge listener. The plugin binds 0.0.0.0 by default, so this is the
+    # only thing keeping it off the rest of the cluster.
+    - ports:
+        - port: {{ $ing.bridgePort }}
+          protocol: TCP
+      from:
+        {{- toYaml $ing.from | nindent 8 }}
+    {{- if $ing.openPorts }}
+    # Ports left open to any source. Without these, turning ingress on also
+    # blocks the Calibre web GUI.
+    - ports:
+        {{- range $ing.openPorts }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- if $eg.enabled }}
   egress:
-    # Allow DNS resolution
+    # DNS resolution
     - ports:
         - port: 53
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Allow HTTPS to GitHub releases and CDN
+    # HTTPS for the init container's release download
     - ports:
         - port: 443
           protocol: TCP
-      {{- if .Values.networkPolicy.egressCIDRs }}
+      {{- if $eg.cidrs }}
       to:
-        {{- range .Values.networkPolicy.egressCIDRs }}
+        {{- range $eg.cidrs }}
         - ipBlock:
             cidr: {{ . }}
         {{- end }}
       {{- end }}
+  {{- end }}
 {{- end }}

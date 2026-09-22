@@ -38,9 +38,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: pip-audit
+        # The plugin has no runtime dependencies, so this audits the pinned CI
+        # and development tooling. It is allowed to fail the build: an audit
+        # that cannot fail is not an audit.
         run: |
-          pip install pip-audit
-          pip-audit --strict || true
+          pip install -r requirements-dev.txt
+          pip-audit --strict --requirement requirements-dev.txt
 
   secrets:
     name: Secret scan (Gitleaks)
@@ -65,6 +68,23 @@ jobs:
           version: v3.14.4
       - name: helm lint
         run: helm lint charts/calibre-plugin-installer
+      - name: helm template (defaults)
+        run: helm template ci charts/calibre-plugin-installer > /dev/null
+      - name: helm template (network policy)
+        run: |
+          helm template ci charts/calibre-plugin-installer \
+            --set networkPolicy.enabled=true \
+            --set 'networkPolicy.ingress.from[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=bindery' \
+            > /dev/null
+      - name: helm template rejects an ingress policy with no peers
+        # An ingress rule with an empty `from` admits the whole cluster to the
+        # bridge port, so the chart must refuse to render one.
+        run: |
+          if helm template ci charts/calibre-plugin-installer \
+            --set networkPolicy.enabled=true > /dev/null 2>&1; then
+            echo "expected the render to fail"
+            exit 1
+          fi
       - name: Checkov
         uses: bridgecrewio/checkov-action@de2bfaecd21d58ef232e0d2a3391c33c32c460d7 # master
         with:

@@ -1,3 +1,5 @@
+{{- include "calibre-plugin-installer.checkRemovedValues" . -}}
+{{- $zip := include "calibre-plugin-installer.zipName" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,28 +14,40 @@ spec:
   template:
     spec:
       initContainers:
-        - name: bindery-bridge-installer
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        # Step 1: fetch the release zip and its published checksum into a
+        # scratch volume. This container needs the network; step 2 does not.
+        - name: bindery-bridge-fetch
+          image: {{ include "calibre-plugin-installer.image" .Values.image | quote }}
           imagePullPolicy: IfNotPresent
           env:
             - name: PLUGIN_VERSION
               value: {{ .Values.pluginVersion | quote }}
-            - name: PLUGIN_DEST_DIR
-              value: {{ .Values.pluginDestDir | quote }}
             - name: PLUGIN_URL
               value: {{ tpl .Values.releaseUrlTemplate . | quote }}
+            - name: PLUGIN_ZIP
+              value: {{ $zip | quote }}
+            - name: VERIFY_CHECKSUM
+              value: {{ .Values.verifyChecksum | quote }}
           command:
             - sh
             - -c
             - |
               set -eu
-              mkdir -p "$PLUGIN_DEST_DIR"
+              cd /bindery-stage
               echo "Downloading Bindery Bridge ${PLUGIN_VERSION} from ${PLUGIN_URL}"
-              curl --retry 5 --retry-delay 4 --retry-connrefused --connect-timeout 10 --max-time 120 --fail -sSL "$PLUGIN_URL" -o "$PLUGIN_DEST_DIR/bindery_bridge.zip"
-              echo "Installed bindery-bridge $PLUGIN_VERSION into $PLUGIN_DEST_DIR"
+              curl --retry 5 --retry-delay 4 --retry-connrefused --connect-timeout 10 \
+                --max-time 120 --fail -sSL "$PLUGIN_URL" -o "$PLUGIN_ZIP"
+              if [ "$VERIFY_CHECKSUM" = "true" ]; then
+                curl --retry 5 --retry-delay 4 --retry-connrefused --connect-timeout 10 \
+                  --max-time 60 --fail -sSL "${PLUGIN_URL}.sha256" -o "${PLUGIN_ZIP}.sha256"
+                sha256sum -c "${PLUGIN_ZIP}.sha256"
+                echo "Checksum verified for ${PLUGIN_ZIP}"
+              else
+                echo "WARNING: checksum verification disabled, ${PLUGIN_ZIP} is unverified"
+              fi
           securityContext:
             runAsNonRoot: true
-            runAsUser: 1000
+            runAsUser: {{ .Values.runAsUser }}
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
@@ -46,5 +60,63 @@ spec:
               cpu: 200m
               memory: 64Mi
           volumeMounts:
+            - name: bindery-bridge-stage
+              mountPath: /bindery-stage
+        # Step 2: register the zip with calibre. Calibre loads plugins from the
+        # `plugins` entry in <config dir>/customize.py.json, which
+        # calibre.customize.ui.initialize_plugins reads at startup; it never
+        # scans the plugins directory. calibre-customize -a is the supported way
+        # to write that entry, and it copies the zip into place itself.
+        - name: bindery-bridge-register
+          image: {{ include "calibre-plugin-installer.image" .Values.calibreImage | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: {{ .Values.calibreHome | quote }}
+            - name: CALIBRE_CONFIG_DIRECTORY
+              value: {{ .Values.calibreConfigDir | quote }}
+            - name: CALIBRE_CUSTOMIZE
+              value: {{ .Values.calibreImage.customizePath | quote }}
+            - name: PLUGIN_NAME
+              value: {{ .Values.pluginName | quote }}
+            - name: PLUGIN_ZIP
+              value: {{ $zip | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              mkdir -p "$CALIBRE_CONFIG_DIRECTORY"
+              "$CALIBRE_CUSTOMIZE" -a "/bindery-stage/$PLUGIN_ZIP"
+              if ! "$CALIBRE_CUSTOMIZE" -l | grep -qF "$PLUGIN_NAME"; then
+                echo "ERROR: ${PLUGIN_NAME} is not in calibre's plugin registry after install"
+                exit 1
+              fi
+              echo "Registered ${PLUGIN_NAME} in ${CALIBRE_CONFIG_DIRECTORY}/customize.py.json"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ .Values.runAsUser }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: bindery-bridge-stage
+              mountPath: /bindery-stage
+              readOnly: true
+            - name: bindery-bridge-tmp
+              mountPath: /tmp
             - name: {{ .Values.volumeName | quote }}
-              mountPath: /config
+              mountPath: {{ .Values.calibreHome | quote }}
+      volumes:
+        - name: bindery-bridge-stage
+          emptyDir: {}
+        - name: bindery-bridge-tmp
+          emptyDir: {}
