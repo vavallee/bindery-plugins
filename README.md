@@ -11,6 +11,24 @@ codebase.
 |------------------|--------------|-----------------------------|---------|
 | Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.6.0  |
 
+### What Bindery Bridge exposes
+
+A small HTTP API on a port you configure, so Bindery can reach the running
+Calibre library without shelling out to `calibredb`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/health` | Version, active library path, and the capability list |
+| `GET /v1/paths` | Whether Calibre can see a path, for diagnosing a container mount before importing anything |
+| `POST /v1/books` | Add a book, with metadata and a cover |
+| `PATCH /v1/books/{id}` | Fill in metadata on a book that is already there |
+
+Every error carries a machine readable `code` alongside its message, and
+`GET /v1/health` advertises which of the above a given plugin version
+supports, so a newer Bindery can talk to an older plugin safely. The full
+contract, including the duplicate detection rules and what an older Bindery
+sees, is in [`docs/protocol.md`](docs/protocol.md).
+
 ## What this repo builds
 
 `scripts/build_plugin.py` packages a directory under `plugins/` into the zip
@@ -118,9 +136,11 @@ For a GitOps and ArgoCD approach using a Helm init container, see
   ```
 
 Everything a plugin imports must live inside its own `plugins/<name>/`
-directory: `build_plugin.py` zips that directory and nothing else, so an
-import from elsewhere in the repo passes pytest here and then fails to load
-inside Calibre. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+directory. The zip is that directory plus the licence files and nothing else,
+so an import from elsewhere in this repo passes pytest here and then fails to
+load inside Calibre. A shared `pluginbase/` package existed for exactly that
+purpose until calibre-bridge 0.6.0 and was removed once it became clear it
+could never have shipped. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 See [`docs/`](docs/) for the HTTP protocol contract and installation tiers.
 

@@ -50,10 +50,12 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 - **`pluginbase/` removed.** It had zero imports, was excluded from coverage,
   and carried a second copy of the bearer check that still used `==`. It also
-  could never have shipped: `build_plugin.py` zips only `plugins/<name>/`, so
-  a plugin importing it would have failed to load inside Calibre.
-  `scaffold_plugin.py` generated exactly such plugins and now generates self
-  contained ones.
+  could never have shipped: the release zip is `plugins/<name>/` plus the
+  licence files and nothing else, so a plugin importing it would have failed
+  to load inside Calibre. `scaffold_plugin.py` generated exactly such plugins
+  and now generates self contained ones. `tests/test_build_plugin.py` and
+  `tests/test_scaffold_plugin.py` assert the invariant so it cannot come
+  back.
 
 #### Added
 
@@ -108,10 +110,11 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
   413 added in 0.5.0, and never mentioned `coverPath`. It now also states the
   client's 30 second timeout and the 503 backoff expectation.
 
-- Test suite goes from 65 tests to 168. `scripts/build_plugin.py` and
-  `scripts/scaffold_plugin.py` had no tests at all and are now at 98%; the
-  `plugin/__init__.py` lifecycle and the `config.py` widget were at 60% and
-  51% and are now at 100%.
+- The calibre-bridge test suite goes from 65 tests to 153, and production
+  coverage of `plugin/` from 82% to 96%. The `plugin/__init__.py` lifecycle
+  and the `config.py` widget were at 60% and 51% and are now at 100%.
+  `scripts/scaffold_plugin.py` had no tests at all and is now at 98%, covered
+  from `tests/` alongside the rest of the release tooling.
 
 #### Compatibility
 
