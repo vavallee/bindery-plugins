@@ -1,7 +1,10 @@
 version: 2
 updates:
   - package-ecosystem: pip
-    directory: /
+    # The manifest lives in .github, not the repo root. Pointing this at "/"
+    # matched nothing, because there is no root requirements file and
+    # pyproject.toml declares no dependencies.
+    directory: /.github
     schedule:
       interval: weekly
       day: monday
