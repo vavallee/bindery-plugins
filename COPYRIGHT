@@ -1,0 +1,34 @@
+Bindery plugins: calibre-bridge and future plugins
+Copyright (C) 2026 vavallee
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+more details.
+
+You should have received a copy of the GNU General Public License along
+with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Why this project is GPL-3.0 rather than MIT
+-------------------------------------------
+
+The plugins in this repository are loaded into Calibre's own process and
+subclass Calibre's classes directly: calibre-bridge subclasses
+calibre.gui2.actions.InterfaceAction, imports calibre.ebooks.metadata,
+calibre.utils.config and calibre.constants, and its configuration widget
+subclasses qt.core.QWidget. Calibre is GPL-3.0 and the Qt build it bundles
+is LGPL-3.0 or GPL-3.0. A plugin in that position is best treated as part
+of a combined work, so this repository carries the licence that combination
+requires rather than one that would advertise permissions the combination
+cannot convey.
+
+This says nothing about Bindery itself, which remains MIT. Bindery never
+links Calibre: it either runs calibredb as a separate process or speaks
+HTTP to this plugin, and both are arm's length interfaces.
+
+This project is not affiliated with or endorsed by the Calibre project.
