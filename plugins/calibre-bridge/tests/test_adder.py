@@ -65,6 +65,7 @@ class _CollisionNewAPI:
         self._next_id = 1
         self._first_id_by_title = {}
         self._identifiers_by_book = {}
+        self._rows_by_id = {}
         self.add_calls = []
         self.find_identical_books_calls = []
         self.search_calls = []
@@ -89,12 +90,28 @@ class _CollisionNewAPI:
         self._next_id += 1
         self._first_id_by_title.setdefault(mi.title, book_id)
         self._identifiers_by_book[book_id] = identifiers
+        self._rows_by_id[book_id] = {"title": mi.title, "authors": list(mi.authors)}
         return [book_id], []
 
     def find_identical_books(self, mi):
+        """Model the REAL heuristic, which is not the one add_duplicates uses.
+
+        calibre ``Cache.find_identical_books``: "Finds books that have a
+        superset of the authors in mi and the same title (title is fuzzy
+        matched)." That is why it is safe as the last rung of the dedupe
+        ladder while ``add_duplicates=False`` is not: the latter goes through
+        ``Cache.has_book``, which is title only.
+        """
         self.find_identical_books_calls.append(mi)
-        book_id = self._first_id_by_title.get(mi.title)
-        return set() if book_id is None else {book_id}
+        wanted = {a.lower() for a in (mi.authors or [])}
+        if not wanted:
+            return set()
+        return {
+            book_id
+            for book_id, row in self._rows_by_id.items()
+            if row["title"].lower() == (mi.title or "").lower()
+            and {a.lower() for a in row["authors"]}.issuperset(wanted)
+        }
 
     def search(self, query, *args, **kwargs):
         self.search_calls.append(query)
@@ -232,7 +249,12 @@ def test_add_book_applies_bindery_metadata(tmp_path):
     assert mi.series_index == 1.5
     assert mi.rating == 9
     mi.set_identifiers.assert_called_once_with({"asin": "B000FC1BN8", "bindery": "42"})
-    db.new_api.search.assert_called_once_with("identifiers:=bindery:=42")
+    # The dedupe ladder tries the bindery identifier first, then the other
+    # identifiers Bindery sent, before it falls through to an add.
+    assert [c.args[0] for c in db.new_api.search.call_args_list] == [
+        "identifiers:=bindery:=42",
+        "identifiers:=asin:=B000FC1BN8",
+    ]
 
 
 def test_add_book_existing_bindery_identifier_uses_exact_search(tmp_path):
@@ -269,17 +291,17 @@ def test_add_book_existing_bindery_identifier_uses_lowest_match(tmp_path):
 
 
 def test_identifier_search_query_quotes_special_literals():
+    """See test_dedupe_ladder.py for why the quote wraps the whole term."""
     adder = _load_adder()
 
     assert adder._identifier_search_query("bindery", "42") == "identifiers:=bindery:=42"
     assert (
         adder._identifier_search_query("bindery", "series:42 copy")
-        == 'identifiers:=bindery:"=series:42 copy"'
+        == 'identifiers:"=bindery:=series:42 copy"'
     )
-    assert (
-        adder._identifier_search_query("bindery", 'quote"slash\\paren(')
-        == 'identifiers:=bindery:"=quote\\"slash\\\\paren("'
-    )
+    # A double quote cannot be expressed in calibre's search grammar, so the
+    # query is refused rather than silently matching the wrong thing.
+    assert adder._identifier_search_query("bindery", 'quote"slash\\paren(') == ""
 
 
 def test_calibre_series_index_parsing():
@@ -360,7 +382,10 @@ def test_bindery_identifier_prevents_same_title_author_collision(tmp_path):
         first_pass_ids.append(book_id)
 
     assert len(set(first_pass_ids)) == 3
-    assert db.new_api.find_identical_books_calls == []
+    # find_identical_books is now the last rung of the ladder, so it IS
+    # consulted, and it correctly declines: three different poets do not
+    # satisfy its author superset requirement.
+    assert len(db.new_api.find_identical_books_calls) == 3
     assert [call["add_duplicates"] for call in db.new_api.add_calls] == [True, True, True]
     assert [call["authors"] for call in db.new_api.add_calls] == [
         ["Emily Brontë"],
@@ -392,9 +417,15 @@ def test_bindery_identifier_prevents_same_title_author_collision(tmp_path):
 
     assert len(db.new_api.add_calls) == 3
     assert db.new_api.search_calls == [
+        # First pass: no bindery identifier exists yet, so the ladder also
+        # tries the isbn before giving up and adding.
         "identifiers:=bindery:=715",
+        "identifiers:=isbn:=9780141966762",
         "identifiers:=bindery:=852",
+        "identifiers:=isbn:=9781504034364",
         "identifiers:=bindery:=921",
+        "identifiers:=isbn:=9780140422153",
+        # Second pass: the bindery identifier hits first, so nothing else runs.
         "identifiers:=bindery:=715",
         "identifiers:=bindery:=852",
         "identifiers:=bindery:=921",

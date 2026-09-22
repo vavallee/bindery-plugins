@@ -13,11 +13,13 @@ class BinderyBridgeAction(InterfaceAction):
     action_spec = ("Bindery Bridge", None, "Configure the Bindery Bridge HTTP API", None)
 
     def genesis(self) -> None:
+        from calibre_plugins.bindery_bridge.plugin import status
         from calibre_plugins.bindery_bridge.plugin.config import load_config
         from calibre_plugins.bindery_bridge.plugin.server import BridgeServer
 
         self._BridgeServer = BridgeServer
         self._load_config = load_config
+        self._status = status
         self._server = None
         self._start_lock = threading.Lock()
         self.qaction.triggered.connect(self.show_dialog)
@@ -52,6 +54,24 @@ class BinderyBridgeAction(InterfaceAction):
                 _log.error("calibre-bridge failed to start: %s", exc)
                 self._server = None
                 self.gui.status_bar.show_message(f"Bindery Bridge failed to start: {exc}", 5000)
+                self._start_degraded(server, cfg, str(exc))
+
+    def _start_degraded(self, server: Any, cfg: dict, reason: str) -> None:
+        """Keep the port answering so the failure is discoverable.
+
+        A five second status bar toast is invisible on a headless or KasmVNC
+        deployment, and a closed port tells Bindery only "connection refused".
+        The degraded server explains itself over the same port, and the
+        config dialog reads the same state out of ``status``.
+        """
+        self._status.set_degraded(reason)
+        try:
+            server.start_degraded(port=int(cfg["port"]), bind_host=cfg["bind_host"], reason=reason)
+        except Exception as degraded_exc:
+            _log.error("calibre-bridge degraded server also failed: %s", degraded_exc)
+            self._status.set_degraded(reason)
+            return
+        self._server = server
 
     def _restart_server(self) -> None:
         with self._start_lock:

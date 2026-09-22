@@ -52,7 +52,10 @@ for _cls in (
     "QDialogButtonBox",
     "QVBoxLayout",
     "QFormLayout",
+    "QHBoxLayout",
+    "QLabel",
     "QLineEdit",
+    "QPushButton",
     "QSpinBox",
     "QWidget",
 ):

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
@@ -47,6 +49,7 @@ def test_scaffold_writes_the_expected_files(scaffold_plugin, scaffold_in):
         "plugin/action.py",
         "plugin/handlers.py",
         "plugin/config.py",
+        "plugin/server.py",
         "tests/__init__.py",
         "tests/conftest.py",
         "tests/test_handlers.py",
@@ -136,3 +139,85 @@ def test_scaffolded_plugin_builds(scaffold_plugin, build_plugin, scaffold_in, tm
 
     out_zip = build_plugin.build(plugin_dir, tmp_path / "dist")
     assert out_zip.name == "kobo-bridge-v0.1.0.zip"
+
+
+# The self containment rule. `pluginbase/` was deleted in calibre-bridge 0.6.0
+# and these templates rewritten, because the generator used to emit
+# `from pluginbase.server import PluginServer` and friends while
+# `build_plugin.py` zips only `plugins/<name>/` plus the licence files. Those
+# plugins passed pytest here and would have failed to load inside Calibre.
+
+
+def test_nothing_generated_imports_the_repository_root(scaffold_plugin, scaffold_in):
+    scaffold_plugin.scaffold("kobo-bridge", 8100)
+    base = scaffold_in / "plugins" / "kobo-bridge"
+
+    offenders = {}
+    for path in sorted(base.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        roots = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots.add(node.module.split(".")[0])
+        # calibre and qt come from the host interpreter; calibre_plugins is how
+        # Calibre exposes the plugin's own zip. Everything else has to be
+        # standard library.
+        outside = {
+            root
+            for root in roots
+            if root not in sys.stdlib_module_names
+            and root not in {"calibre", "calibre_plugins", "qt", "pytest"}
+        }
+        if outside:
+            offenders[str(path.relative_to(base))] = sorted(outside)
+    assert offenders == {}
+
+
+def test_every_generated_import_resolves_inside_the_plugin(scaffold_plugin, scaffold_in):
+    """A `calibre_plugins.<name>.plugin.<mod>` import must name a real file."""
+    scaffold_plugin.scaffold("kobo-bridge", 8100)
+    base = scaffold_in / "plugins" / "kobo-bridge"
+
+    missing = []
+    for path in sorted(base.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            parts = node.module.split(".")
+            if parts[:3] != ["calibre_plugins", "kobo_bridge", "plugin"]:
+                continue
+            target = base.joinpath(*parts[2:]).with_suffix(".py")
+            if not target.is_file():
+                missing.append(f"{path.relative_to(base)} imports {node.module}")
+    assert missing == []
+
+
+def test_the_generated_bearer_check_is_timing_safe(scaffold_plugin, scaffold_in):
+    """The second copy of this check is what made `pluginbase` worth deleting.
+
+    It still used `==` after the real one in calibre-bridge was fixed, so a new
+    plugin would have started from the defective version.
+    """
+    scaffold_plugin.scaffold("kobo-bridge", 8100)
+    handlers = (scaffold_in / "plugins" / "kobo-bridge" / "plugin" / "handlers.py").read_text()
+
+    assert "hmac.compare_digest" in handlers
+    assert "== api_key" not in handlers
+    assert "!= api_key" not in handlers
+
+
+def test_the_generated_test_suite_passes(scaffold_plugin, scaffold_in):
+    """End to end: the skeleton a contributor starts from has to be green."""
+    scaffold_plugin.scaffold("kobo-bridge", 8100)
+    base = scaffold_in / "plugins" / "kobo-bridge"
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "pytest", str(base / "tests"), "-q", "-p", "no:cacheprovider"],
+        capture_output=True,
+        text=True,
+        cwd=str(scaffold_in),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
