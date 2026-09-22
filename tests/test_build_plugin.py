@@ -258,3 +258,28 @@ def test_the_real_zip_carries_the_repository_licence(build_plugin, tmp_path):
     # is there, so this starts covering it the moment that branch lands.
     if (repo_root / "COPYRIGHT").is_file():
         assert "COPYRIGHT" in names
+
+
+def test_the_real_zip_carries_nothing_else_from_the_repository_root(build_plugin, tmp_path):
+    """The rule that decided the fate of `pluginbase/`.
+
+    The zip is `plugins/<name>/**` plus the declared licence files and nothing
+    else, so a plugin importing a package that lives at the repository root
+    passes pytest here and then fails to load inside Calibre. `pluginbase/`
+    was exactly that, and `scaffold_plugin.py` generated plugins that imported
+    it, so this asserts the invariant rather than leaving it as folklore.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    plugin_dir = repo_root / "plugins" / "calibre-bridge"
+    if not plugin_dir.is_dir():
+        pytest.skip("calibre-bridge plugin not present")
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    with zipfile.ZipFile(out_zip) as zf:
+        names = set(zf.namelist())
+
+    from_plugin = {
+        path.relative_to(plugin_dir).as_posix() for path in plugin_dir.rglob("*") if path.is_file()
+    }
+    unexplained = names - from_plugin - set(build_plugin.LICENCE_FILES)
+    assert unexplained == set()

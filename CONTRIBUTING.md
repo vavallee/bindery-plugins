@@ -31,9 +31,10 @@ This creates `plugins/my-plugin/` with:
 ## Plugin anatomy
 
 **Every module a plugin imports must live inside that plugin's own
-directory.** `scripts/build_plugin.py` zips `plugins/<name>/**` and nothing
-else, so an import from anywhere else in this repo resolves when you run
-pytest and then fails when Calibre loads the released zip. A shared
+directory.** `scripts/build_plugin.py` zips `plugins/<name>/**` plus the
+repository's `LICENSE` and `COPYRIGHT`, and nothing else, so an import from
+anywhere else in this repo resolves when you run pytest and then fails when
+Calibre loads the released zip. A shared
 `pluginbase/` package existed until 0.6.0 for exactly this purpose and was
 removed once it became clear it could never have shipped: nothing imported it,
 it was excluded from coverage, and it carried a second copy of the bearer
@@ -42,8 +43,10 @@ inside the plugin, is the rule.
 
 If two plugins ever do need to share code, the honest options are to vendor it
 into each plugin directory or to teach `build_plugin.py` to copy a shared
-package into the zip. Pick one deliberately rather than relying on the repo
-root being importable.
+package into the zip the way it already copies the licence files. Pick one
+deliberately rather than relying on the repo root being importable.
+`tests/test_build_plugin.py` and `tests/test_scaffold_plugin.py` assert this
+invariant, so a regression fails CI rather than a user's Calibre.
 
 ## Tests
 
@@ -56,12 +59,23 @@ fixtures the tests share. `scaffold_plugin.py` generates both.
 ### Running tests
 
 ```bash
-# One plugin
+# Everything
+pytest
+
+# One plugin, with coverage
 pytest plugins/calibre-bridge/tests --cov=plugins/calibre-bridge/plugin
+
+# The release tooling under scripts/
+pytest tests
 
 # With bandit security scan
 bandit -r plugins/calibre-bridge/plugin
 ```
+
+The interpreter matters. The test matrix is Python 3.10, 3.11 and 3.14,
+because that is what Calibre 6, Calibre 7 and 8, and Calibre 9 embed. No
+Calibre release has ever embedded 3.12 or 3.13, so passing on those proves
+nothing about the interpreter the plugin will actually run on.
 
 ### Coverage floor
 
