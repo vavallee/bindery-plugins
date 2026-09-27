@@ -47,6 +47,7 @@ def make_plugin_tree(root: pathlib.Path) -> pathlib.Path:
     (plugin_dir / "tests" / "test_handlers.py").write_text("def test_x(): pass\n")
     (plugin_dir / "plugin" / "__pycache__" / "handlers.cpython-312.pyc").write_bytes(b"\x00")
     (plugin_dir / "plugin" / "stale.pyc").write_bytes(b"\x00")
+    (plugin_dir / "conftest.py").write_text("# calibre and Qt stubs for pytest\n")
     return plugin_dir
 
 
@@ -92,6 +93,7 @@ def test_build_produces_the_expected_members(build_plugin, tmp_path):
     assert not [n for n in names if n.startswith("tests/")]
     assert not [n for n in names if "__pycache__" in n]
     assert not [n for n in names if n.endswith(".pyc")]
+    assert not [n for n in names if n.rsplit("/", 1)[-1] == "conftest.py"]
 
 
 def test_build_writes_paths_calibre_can_load(build_plugin, tmp_path):
@@ -283,3 +285,22 @@ def test_the_real_zip_carries_nothing_else_from_the_repository_root(build_plugin
     }
     unexplained = names - from_plugin - set(build_plugin.LICENCE_FILES)
     assert unexplained == set()
+
+
+def test_the_real_zip_carries_no_test_stubs(build_plugin, tmp_path):
+    """The plugin root conftest.py stubs calibre and Qt for pytest.
+
+    It sits beside __init__.py rather than under tests/, so excluding the
+    tests directory alone shipped it in every release zip up to 0.6.2.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    plugin_dir = repo_root / "plugins" / "calibre-bridge"
+    if not plugin_dir.is_dir():
+        pytest.skip("calibre-bridge plugin not present")
+    assert (plugin_dir / "conftest.py").is_file(), "fixture moved, update this test"
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    with zipfile.ZipFile(out_zip) as zf:
+        names = zf.namelist()
+
+    assert [n for n in names if n.rsplit("/", 1)[-1] == "conftest.py"] == []

@@ -114,16 +114,18 @@ Line length: 100. Python 3.10+.
 
 ## Release tags
 
-Tags follow the convention `<plugin-name>-vX.Y.Z`:
+Tags follow the convention `v-<plugin-name>-X.Y.Z`:
 
 ```
-calibre-bridge-v0.4.0
-my-plugin-v1.0.0
+v-calibre-bridge-0.6.3
+v-my-plugin-1.0.0
 ```
 
-The CI `release` job fires on any tag matching `v*`. A `calibre-bridge-v*`
-tag builds and releases calibre-bridge; future plugins can add their own
-`release` jobs gated on `<plugin>-v*` tags.
+The CI `release` job fires on any tag matching `v*`, builds calibre-bridge,
+and takes the release notes from the matching `### [X.Y.Z]` section of
+`CHANGELOG.md`. The zip inside the release is still named
+`calibre-bridge-vX.Y.Z.zip`; only the tag carries the `v-` prefix. A future
+plugin will need its own `release` job gated on its own `v-<plugin>-` tags.
 
 Bump `version = (X, Y, Z)` in the plugin's `__init__.py` and
 `PLUGIN_VERSION` in `plugin/handlers.py` to match the tag.
@@ -131,7 +133,9 @@ Bump `version = (X, Y, Z)` in the plugin's `__init__.py` and
 ## Helm chart
 
 The `charts/calibre-plugin-installer` chart downloads and installs a plugin
-zip at pod startup. Update `values.yaml` `pluginUrl` when cutting a release.
+zip at pod startup. It builds the download URL from `pluginVersion` through
+`releaseUrlTemplate`, so after a release is published bump `pluginVersion` in
+`values.yaml` (and the pin in `argocd/application.yaml`) to the new version.
 
 The init container uses curl with retry flags — do not replace with bare
 `curl <url>`. See `templates/patch.yaml` for the required flags.

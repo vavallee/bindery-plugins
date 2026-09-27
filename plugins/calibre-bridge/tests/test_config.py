@@ -241,6 +241,7 @@ def _make_action(mod, mock_server_cls, mock_load_config):
     action._get_db = MagicMock()
     action._get_gui = MagicMock()
     action._status = MagicMock()
+    action._on_added = None
     return action
 
 

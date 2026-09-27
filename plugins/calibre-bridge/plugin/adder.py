@@ -2,6 +2,7 @@ import logging
 import ntpath
 import os
 import pathlib
+from collections.abc import Callable
 from typing import Any, NamedTuple
 
 from calibre.ebooks.metadata.meta import get_metadata
@@ -71,6 +72,23 @@ class BookNotFound(LookupError):
     """No book with the requested id exists in the active library."""
 
 
+class SourceUnreadable(OSError):
+    """The file at ``path`` is there but the Calibre process cannot read it.
+
+    A permission problem or a directory where a book was expected. Kept apart
+    from ``FileNotFoundError`` so a client can tell a wrong mount from a file
+    it cannot open, and from a failure inside Calibre's own copy.
+    """
+
+
+class CopyFailed(OSError):
+    """Calibre could read the source but failed to copy it into the library.
+
+    Raised from the ``OSError`` that ``add_books`` or ``add_format`` raised,
+    which stays available as ``__cause__``.
+    """
+
+
 class AddResult(NamedTuple):
     book_id: int
     duplicate: bool
@@ -85,13 +103,16 @@ def add_book(
     gui: Any | None = None,
     metadata: dict[str, Any] | None = None,
     ingest_root: str = "",
+    on_added: Callable[[int], Any] | None = None,
 ) -> tuple[int, bool]:
     """Add a book to the Calibre library. Returns ``(book_id, duplicate)``.
 
     Kept for callers that only want the 0.5.0 pair. See
     :func:`add_book_detailed` for the cover outcome as well.
     """
-    result = add_book_detailed(db, path, gui=gui, metadata=metadata, ingest_root=ingest_root)
+    result = add_book_detailed(
+        db, path, gui=gui, metadata=metadata, ingest_root=ingest_root, on_added=on_added
+    )
     return result.book_id, result.duplicate
 
 
@@ -101,6 +122,7 @@ def add_book_detailed(
     gui: Any | None = None,
     metadata: dict[str, Any] | None = None,
     ingest_root: str = "",
+    on_added: Callable[[int], Any] | None = None,
 ) -> AddResult:
     """Add a book to the Calibre library.
 
@@ -118,17 +140,30 @@ def add_book_detailed(
     Runs on the bridge's HTTP thread, so we pass ``run_hooks=False`` to
     avoid triggering Calibre hooks that touch Qt widgets from a non-GUI
     thread (which causes the handler thread to abort without a response,
-    i.e. the caller sees an empty TCP reply). A GUI refresh is scheduled
-    via ``QTimer.singleShot(0, ...)`` so new books appear in the library
-    view without a manual Ctrl+R.
+    i.e. the caller sees an empty TCP reply). For the same reason the GUI
+    refresh that makes new books appear without a manual Ctrl+R is handed to
+    ``on_added``, a callable that marshals onto the GUI thread (the action
+    passes a ``calibre.gui2.Dispatcher``). See :func:`_schedule_gui_refresh`.
+
+    A source file that exists but cannot be opened raises
+    :class:`SourceUnreadable`; a failure while Calibre copies it into the
+    library raises :class:`CopyFailed`. A missing file still raises
+    ``FileNotFoundError``.
     """
+    requested_path = path
     _check_ingest_path(path, ingest_root)
     fmt = os.path.splitext(path)[1][1:].upper()
     if not fmt:
         raise BadFormat(f"Cannot determine book format from extension: {path!r}")
     api = db.new_api
     path = _calibre_safe_path(path)
-    with open(path, "rb") as f:
+    try:
+        source = open(path, "rb")  # noqa: SIM115 (closed by the with below)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise SourceUnreadable(f"Cannot read {requested_path!r}: {exc.strerror or exc}") from exc
+    with source as f:
         mi = get_metadata(f, os.path.splitext(path)[1][1:])
     apply_bindery_metadata(mi, metadata)
     identifiers = (
@@ -143,9 +178,14 @@ def add_book_detailed(
                 # without a file by an add that failed after the row was
                 # written. Reporting it as a duplicate would leave it empty
                 # for good, so attach the file instead.
-                api.add_format(existing, fmt, path, run_hooks=False)
+                try:
+                    api.add_format(existing, fmt, path, run_hooks=False)
+                except FileNotFoundError:
+                    raise
+                except OSError as exc:
+                    raise _copy_failed(requested_path, exc) from exc
                 _log.info("attached %s to book %d, which an earlier add left empty", fmt, existing)
-                _schedule_gui_refresh(gui, 1)
+                _schedule_gui_refresh(gui, 1, on_added)
                 return AddResult(existing, False, None)
             return AddResult(existing, True, None)
 
@@ -168,16 +208,18 @@ def add_book_detailed(
             add_duplicates=bool(bindery_id),
             run_hooks=False,
         )
-    except Exception:
+    except Exception as exc:
         # add_books writes the row before it copies the file, so a copy that
         # fails (a path Calibre cannot open, for one) leaves a book with no
         # format behind. Remove it so the library does not fill with empty
         # records and the next push is not taken for a duplicate.
         if bindery_id:
             _remove_empty_bindery_row(api, bindery_id)
+        if isinstance(exc, OSError) and not isinstance(exc, FileNotFoundError):
+            raise _copy_failed(requested_path, exc) from exc
         raise
     if ids:
-        _schedule_gui_refresh(gui, len(ids))
+        _schedule_gui_refresh(gui, len(ids), on_added)
         return AddResult(int(ids[0]), False, cover_applied)
 
     if bindery_id:
@@ -193,6 +235,10 @@ def add_book_detailed(
     if identical:
         return AddResult(int(next(iter(identical))), True, None)
     return AddResult(0, True, None)
+
+
+def _copy_failed(path: str, exc: OSError) -> CopyFailed:
+    return CopyFailed(f"Calibre could not copy {path!r} into the library: {exc}")
 
 
 def update_book(
@@ -505,19 +551,33 @@ def probe_path(path: str, ingest_root: str = "") -> dict[str, Any]:
     }
 
 
-def _schedule_gui_refresh(gui: Any | None, count: int) -> None:
+def _schedule_gui_refresh(
+    gui: Any | None, count: int, on_added: Callable[[int], Any] | None = None
+) -> None:
     """Make ``count`` freshly-added books show up in the Calibre GUI (#1).
 
     ``add_books`` runs on the bridge's HTTP thread, so the library view never
     learns about the new rows until something pokes the model and the user is
-    forced to press Ctrl+R. ``resort()`` (the previous attempt) only re-orders
-    rows that are already loaded; ``books_added()`` is what actually inserts the
-    new ones, and ``tags_view.recount()`` refreshes the tag-browser counts.
-    Both must run on the GUI thread, hence ``QTimer.singleShot(0, ...)``.
+    forced to press Ctrl+R. ``books_added()`` is what inserts the new rows and
+    ``tags_view.recount()`` refreshes the tag browser counts. Both must run on
+    the GUI thread.
 
-    The import is ``qt.core`` (Qt6, Calibre 6+); the old ``PyQt5.Qt`` path
-    silently failed on modern Calibre, which is why no refresh happened at all.
+    ``on_added`` is how they get there. The action builds it on the GUI thread
+    as a ``calibre.gui2.Dispatcher``, which queues the call onto the thread it
+    was created on, so calling it from here is safe and the refresh actually
+    runs. That is the path every 0.6.3 install takes.
+
+    The ``gui`` fallback is kept for callers that pass no ``on_added``. It uses
+    ``QTimer.singleShot(0, ...)``, which queues onto the calling thread's event
+    loop. The HTTP worker thread has none, so on real Calibre (checked on 9.14)
+    the timer never fires and the view is not refreshed. Do not rely on it.
     """
+    if on_added is not None:
+        try:
+            on_added(count)
+        except Exception as exc:
+            _log.debug("Calibre GUI refresh dispatch failed: %s", exc)
+        return
     if gui is None:
         return
     try:

@@ -4,7 +4,7 @@ The Bindery Bridge Calibre plugin exposes a small HTTP API that Bindery uses to
 add and update books in the running Calibre library without shelling out to
 `calibredb`. All endpoints are prefixed with `/v1/`.
 
-This document describes what the plugin actually implements at 0.6.0. Anything
+This document describes what the plugin actually implements at 0.6.3. Anything
 the code does not do is not in here.
 
 ## Versioning
@@ -36,9 +36,12 @@ visible rather than showing up as connection refused. See
 [Degraded mode](#degraded-mode).
 
 `GET /v1/health` is always unauthenticated so clients can probe readiness
-without provisioning credentials. It reports the plugin version, the Calibre
-version and the active library path, so do not expose the port to a network you
-would not show those to.
+without provisioning credentials, and it never answers `401`. It reports the
+plugin version and the Calibre version to anyone. Since 0.6.3 it reports the
+active library path only to a request carrying a valid bearer token; anyone
+else gets `library: ""`. Bindery already sends its token on health, so it still
+sees the path. With no `api_key` configured (loopback only) every caller counts
+as authenticated and gets the path, as before.
 
 ## Timeouts and retries
 
@@ -74,11 +77,13 @@ branching on the status alone.
 | `db_unavailable` | 503 | Library is mid swap, no database right now |
 | `invalid_json` | 400 | Body is not JSON, or `Content-Length` is not a number |
 | `invalid_metadata` | 400 | A request field is missing or the wrong type |
-| `path_not_found` | 400 | The Calibre process cannot open the file at `path` |
+| `path_not_found` | 400 | There is no file at `path` as the Calibre process sees it |
+| `path_unreadable` | 400 | A file is there but the Calibre process cannot open it (permissions, or a directory). Since 0.6.3 |
 | `path_forbidden` | 400 | `path` contains `..`, or resolves outside `ingest_root` |
 | `bad_format` | 400 | No usable book format could be read from the extension |
 | `body_too_large` | 413 | `Content-Length` exceeds `max_body_bytes` (default 64 MiB) |
 | `not_found` | 404 | No such endpoint, or no such book id |
+| `copy_failed` | 500 | Calibre read the file but failed to copy it into the library. `error` names the path. Since 0.6.3 |
 | `internal` | 500 | Unexpected failure |
 
 `path_not_found` versus `invalid_metadata` is the distinction that motivated
@@ -88,6 +93,10 @@ malformed metadata object looked identical on the wire; Bindery logged
 and the operator's first diagnostic line blamed metadata for a filesystem
 problem. A client that understands `error_codes` should retry the legacy
 payload only on `invalid_metadata`.
+
+`path_unreadable` and `copy_failed` came in 0.6.3; before that both conditions
+were `500 internal`. A client that does not know a code should treat it by its
+status, which is what Bindery's client does, so adding codes is compatible.
 
 ## Endpoints
 
@@ -99,7 +108,7 @@ Liveness, version and capability probe. Unauthenticated.
 
 ```json
 {
-  "plugin_version": "0.6.0",
+  "plugin_version": "0.6.3",
   "calibre_version": "9.7.0",
   "library": "/media/BOOKS",
   "capabilities": ["book_metadata", "cover", "path_probe", "metadata_update", "error_codes"]
@@ -107,7 +116,8 @@ Liveness, version and capability probe. Unauthenticated.
 ```
 
 All four fields are always present. `library` is `""` while the library is
-initializing or being swapped.
+initializing or being swapped, and `""` for a caller without a valid bearer
+token (see [Authentication](#authentication)).
 
 | Capability | What it means |
 |---|---|
@@ -235,6 +245,28 @@ response is byte for byte the 0.5.0 shape.
 Note that a client applying a push path remap must remap `coverPath` too. The
 plugin opens it on its own side of the container boundary, exactly like `path`.
 
+**Windows share paths**
+
+Since 0.6.1, a `path` or `coverPath` of the form `\\server\share\...` is
+accepted on a Windows host and handed to Calibre in the extended form
+`\\?\UNC\server\share\...`, with separators normalised first. Calibre's own
+long path handling prefixes `\\?\` to any path over 200 characters without
+knowing about UNC, which turned a long share path into one Windows rejects
+(`[Errno 22] Invalid argument`). Drive letter paths, paths already in an
+extended form, and every path on a non Windows host are passed through
+unchanged. A client does not need to do anything: send the share path as the
+remap produces it.
+
+**A failed add does not leave an empty row**
+
+Calibre's `add_books` writes the book row before it copies the file. Since
+0.6.2, when the copy fails the plugin removes the formatless row that add left
+for the request's `bindery` identifier, so a failure does not leave an empty
+book that the next push would take for a duplicate. A request without a
+`bindery` identifier has nothing to find the row by, so this cleanup does not
+apply to it. Since 0.6.3 that failure is
+reported as `500` with `copy_failed`.
+
 **Responses**
 
 - `201 Created`, book was added.
@@ -285,8 +317,13 @@ weaker evidence and stopping at the first hit:
    authors in mi and the same title (title is fuzzy matched)", so unlike
    `has_book` it does not confuse two books that merely share a title.
 
-Any hit returns `409` with the existing id. Nothing matched means the book is
-added.
+Any hit returns `409` with the existing id, with one exception: when the hit is
+a row carrying the same `bindery` identifier and no format at all, the file is
+attached to that row and the response is `201` with its id and
+`"duplicate": false`. Such a row is what a failed add left behind before 0.6.2
+removed them, so attaching the file repairs it. An empty row matched on any
+other rung, such as a wishlist entry made by hand with an ISBN, is left alone
+and still returns `409`. Nothing matched means the book is added.
 
 Rungs 2 and 3 were added in 0.6.0. Before that the only rung was the first one,
 so the first "Push all to Calibre" against a library Bindery had not populated
@@ -390,10 +427,12 @@ plugin's own configuration dialog.
   breaking for pre 0.6.0 clients, which have nothing else to read. Add a `code`
   and leave the string alone.
 
-### What an older Bindery sees on 0.6.0
+### What an older Bindery sees on 0.6.3
 
 | Client | Behaviour |
 |---|---|
 | Pre 0.4.0 (no metadata) | Unchanged. Sends `{"path": ...}`, gets `{"id", "duplicate"}` |
 | 0.4.0 and 0.5.0 | Unchanged responses. Ignores the extra `code` field and `Retry-After`. Never sends `coverPath`, so never sees `cover_applied`. Never calls the two new endpoints |
 | Any client | Gains the dedupe ladder, which turns what used to be a silent duplicate into a `409` with the existing id. A client that already treats `409` as "already there" needs no change |
+| Any client | Sees `path_unreadable` (400) and `copy_failed` (500) where 0.6.2 sent `internal` (500). A client branching on status alone sees an unreadable path move from 500 to 400 |
+| Any client without the token | Gets `library: ""` from health. Bindery sends its token on every request, health included |

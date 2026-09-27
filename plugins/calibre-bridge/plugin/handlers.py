@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-PLUGIN_VERSION = "0.6.2"
+PLUGIN_VERSION = "0.6.3"
 
 # Optional protocol features. A client that understands none of them still
 # works: everything 0.6.0 adds is a new endpoint, a new response field or a
@@ -31,6 +31,10 @@ CODE_INVALID_JSON = "invalid_json"
 CODE_INVALID_METADATA = "invalid_metadata"
 CODE_PATH_NOT_FOUND = "path_not_found"
 CODE_PATH_FORBIDDEN = "path_forbidden"
+# 0.6.3: a file that is there but cannot be opened, and a failure inside
+# Calibre's own copy into the library. Both used to surface as ``internal``.
+CODE_PATH_UNREADABLE = "path_unreadable"
+CODE_COPY_FAILED = "copy_failed"
 CODE_BAD_FORMAT = "bad_format"
 CODE_BODY_TOO_LARGE = "body_too_large"
 CODE_NOT_FOUND = "not_found"
@@ -84,6 +88,7 @@ def make_handler(
     get_gui: Callable[[], Any] | None = None,
     ingest_root: str = "",
     max_body_bytes: int = 64 * 1024 * 1024,
+    on_added: Callable[[int], Any] | None = None,
 ) -> type:
     from calibre_plugins.bindery_bridge.plugin import adder as adder_mod
 
@@ -134,15 +139,24 @@ def make_handler(
                 headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
             )
 
-        def _check_auth(self) -> bool:
+        def _check_auth(self, quiet: bool = False) -> bool:
+            """True when the request may act. ``quiet`` skips the failure log.
+
+            Health uses the quiet form: it is unauthenticated by design, so a
+            probe without a token is not an auth failure worth a warning.
+            """
             if not api_key:
                 return True
             header = self.headers.get("Authorization", "")
             if not header.startswith("Bearer "):
-                _log.warning("auth failure: missing Bearer token from %s", self.address_string())
+                if not quiet:
+                    _log.warning(
+                        "auth failure: missing Bearer token from %s", self.address_string()
+                    )
                 return False
             if not _tokens_match(header[len("Bearer ") :].strip(), api_key):
-                _log.warning("auth failure: invalid token from %s", self.address_string())
+                if not quiet:
+                    _log.warning("auth failure: invalid token from %s", self.address_string())
                 return False
             return True
 
@@ -197,7 +211,10 @@ def make_handler(
             self._send_not_found()
 
         def _handle_health(self) -> None:
-            db = get_db()
+            # Health stays reachable without a token, but the library path is
+            # a filesystem layout detail, so only an authenticated caller (or
+            # a loopback bridge with no api_key at all) gets it.
+            db = get_db() if self._check_auth(quiet=True) else None
             library = ""
             if db is not None:
                 try:
@@ -270,10 +287,23 @@ def make_handler(
             try:
                 gui = get_gui() if get_gui is not None else None
                 result = adder_mod.add_book_detailed(
-                    db, path, gui=gui, metadata=metadata, ingest_root=ingest_root
+                    db,
+                    path,
+                    gui=gui,
+                    metadata=metadata,
+                    ingest_root=ingest_root,
+                    on_added=on_added,
                 )
             except (FileNotFoundError, ValueError) as exc:
                 self._send_path_error(exc)
+                return
+            except adder_mod.SourceUnreadable as exc:
+                _log.warning("path unreadable: %s", exc)
+                self._send_error_json(400, CODE_PATH_UNREADABLE, str(exc))
+                return
+            except adder_mod.CopyFailed as exc:
+                _log.error("copy into the library failed: %s (%s)", exc, exc.__cause__)
+                self._send_error_json(500, CODE_COPY_FAILED, str(exc))
                 return
             except Exception as exc:  # pragma: no cover - defensive
                 _log.error("add_book unexpected error path=%r: %s", path, exc)

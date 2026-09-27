@@ -527,22 +527,36 @@ def test_add_book_bad_series_index_does_not_fail_add(tmp_path):
 
 
 def _stub_qt_core(monkeypatch):
-    """Install a qt.core stub whose QTimer.singleShot runs the callback inline."""
+    """Install a qt.core stub whose QTimer.singleShot only records the call.
+
+    Until 0.6.3 this stub ran the callback inline, which is exactly what real
+    Qt does not do when singleShot is called from a thread with no event loop
+    (the bridge's HTTP worker). The tests passed while the refresh never ran
+    in Calibre. Recording the call keeps the fallback honest: these tests show
+    the timer was queued, not that it fired.
+    """
     qt = types.ModuleType("qt")
     qt_core = types.ModuleType("qt.core")
+    calls = []
 
     class _QTimer:
         @staticmethod
-        def singleShot(_msec, fn):
-            fn()
+        def singleShot(msec, fn):
+            calls.append((msec, fn))
 
     qt_core.QTimer = _QTimer
     monkeypatch.setitem(sys.modules, "qt", qt)
     monkeypatch.setitem(sys.modules, "qt.core", qt_core)
+    return calls
 
 
-def test_add_book_refreshes_gui_on_insert(tmp_path, monkeypatch):
-    _stub_qt_core(monkeypatch)
+def test_legacy_gui_fallback_only_queues_a_timer(tmp_path, monkeypatch):
+    """Without on_added the adder falls back to singleShot, and nothing more.
+
+    The refresh body runs only if something drains that timer. On the worker
+    thread nothing does, which is the 0.6.2 bug; on_added is the fix.
+    """
+    timers = _stub_qt_core(monkeypatch)
     adder = _load_adder()
     book = tmp_path / "book.epub"
     book.write_bytes(b"stub epub bytes")
@@ -555,13 +569,16 @@ def test_add_book_refreshes_gui_on_insert(tmp_path, monkeypatch):
     book_id, duplicate = adder.add_book(db, str(book), gui=gui)
 
     assert (book_id, duplicate) == (42, False)
-    # books_added (not resort) is what makes the new row appear; tags recount too.
+    assert len(timers) == 1
+    gui.library_view.model().books_added.assert_not_called()
+    # If Qt did run it, the body is still the right one.
+    timers[0][1]()
     gui.library_view.model().books_added.assert_called_once_with(1)
     gui.tags_view.recount.assert_called_once_with()
 
 
 def test_add_book_duplicate_does_not_refresh_gui(tmp_path, monkeypatch):
-    _stub_qt_core(monkeypatch)
+    timers = _stub_qt_core(monkeypatch)
     adder = _load_adder()
     book = tmp_path / "book.epub"
     book.write_bytes(b"stub epub bytes")
@@ -569,11 +586,68 @@ def test_add_book_duplicate_does_not_refresh_gui(tmp_path, monkeypatch):
     db = MagicMock()
     db.new_api.search.return_value = {9}
     gui = MagicMock()
+    on_added = MagicMock()
 
     book_id, duplicate = adder.add_book(
-        db, str(book), gui=gui, metadata={"identifiers": {"bindery": "42"}}
+        db, str(book), gui=gui, metadata={"identifiers": {"bindery": "42"}}, on_added=on_added
     )
 
     assert (book_id, duplicate) == (9, True)
+    assert timers == []
+    on_added.assert_not_called()
     gui.library_view.model().books_added.assert_not_called()
     gui.tags_view.recount.assert_not_called()
+
+
+def test_on_added_gets_the_count_from_the_worker_thread(tmp_path, monkeypatch):
+    """The refresh is handed to on_added, never attempted on the worker.
+
+    Runs the add on a separate thread, as the HTTP server does, and checks
+    that the only thing that thread did about the GUI was call on_added. In
+    Calibre on_added is a Dispatcher, which carries the call to the GUI thread.
+    """
+    import threading
+
+    timers = _stub_qt_core(monkeypatch)
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub epub bytes")
+
+    db = MagicMock()
+    db.new_api.search.return_value = set()
+    db.new_api.add_books.return_value = ([42], {})
+    gui = MagicMock()
+    seen = []
+
+    def on_added(count):
+        seen.append((count, threading.current_thread().name))
+
+    result = {}
+
+    def worker():
+        result["value"] = adder.add_book(db, str(book), gui=gui, on_added=on_added)
+
+    thread = threading.Thread(target=worker, name="bindery-bridge-http")
+    thread.start()
+    thread.join(timeout=5)
+
+    assert result["value"] == (42, False)
+    assert seen == [(1, "bindery-bridge-http")]
+    assert timers == [], "fell back to QTimer.singleShot on a thread with no event loop"
+    gui.library_view.model().books_added.assert_not_called()
+    gui.tags_view.recount.assert_not_called()
+
+
+def test_a_failing_on_added_does_not_fail_the_add(tmp_path):
+    adder = _load_adder()
+    book = tmp_path / "book.epub"
+    book.write_bytes(b"stub epub bytes")
+
+    db = MagicMock()
+    db.new_api.search.return_value = set()
+    db.new_api.add_books.return_value = ([42], {})
+
+    def on_added(count):
+        raise RuntimeError("GUI gone")
+
+    assert adder.add_book(db, str(book), on_added=on_added) == (42, False)

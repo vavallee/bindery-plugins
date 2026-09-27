@@ -1,11 +1,30 @@
 import contextlib
 import logging
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from calibre.gui2.actions import InterfaceAction
 
 _log = logging.getLogger(__name__)
+
+
+def _gui_thread_dispatcher(fn: Callable[[int], None]) -> Callable[[int], None] | None:
+    """Wrap ``fn`` so a call from any thread runs it on the GUI thread.
+
+    Must be called on the GUI thread. ``calibre.gui2.Dispatcher`` is a QObject
+    whose call emits a queued signal, so the slot runs on the thread that
+    created it. A ``QTimer.singleShot`` from the bridge's HTTP thread, which
+    is what 0.6.2 and earlier used, queues onto that thread's event loop, and
+    it has none, so the refresh never ran. Returns None when calibre.gui2 is
+    not importable (the test stubs), which leaves the adder on its fallback.
+    """
+    try:
+        from calibre.gui2 import Dispatcher
+    except Exception as exc:
+        _log.debug("calibre.gui2.Dispatcher unavailable, no GUI refresh: %s", exc)
+        return None
+    return Dispatcher(fn)  # type: ignore[no-any-return]
 
 
 class BinderyBridgeAction(InterfaceAction):
@@ -22,11 +41,23 @@ class BinderyBridgeAction(InterfaceAction):
         self._status = status
         self._server = None
         self._start_lock = threading.Lock()
+        # Built here because genesis runs on the GUI thread, which is the
+        # thread the Dispatcher delivers to. Held on self so it is not
+        # collected while the server still calls it.
+        self._on_added = _gui_thread_dispatcher(self._refresh_gui)
         self.qaction.triggered.connect(self.show_dialog)
         self._start_server()
 
     def _get_gui(self) -> Any:
         return self.gui
+
+    def _refresh_gui(self, count: int) -> None:
+        """Show ``count`` newly added books. Runs on the GUI thread."""
+        try:
+            self.gui.library_view.model().books_added(count)
+            self.gui.tags_view.recount()
+        except Exception as exc:
+            _log.debug("Calibre GUI refresh failed: %s", exc)
 
     def _start_server(self) -> None:
         _log.debug("_start_server called")
@@ -45,6 +76,7 @@ class BinderyBridgeAction(InterfaceAction):
                     get_gui=self._get_gui,
                     ingest_root=cfg.get("ingest_root", ""),
                     max_body_bytes=int(cfg.get("max_body_bytes", 64 * 1024 * 1024)),
+                    on_added=self._on_added,
                 )
                 self.gui.status_bar.show_message(
                     f"Bindery Bridge listening on {cfg['bind_host']}:{cfg['port']}",

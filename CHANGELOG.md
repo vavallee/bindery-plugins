@@ -7,6 +7,45 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.6.3] - 2026-09-27
+
+#### Fixed
+
+- **New books never showed up in the Calibre window until Ctrl+R.** The
+  refresh after an add was a `QTimer.singleShot` issued from the bridge's HTTP
+  thread. That queues onto the calling thread's event loop, and the HTTP
+  thread has none, so the timer never fired. The tests stubbed `singleShot`
+  to run inline, which is why they never noticed. The plugin now builds a
+  `calibre.gui2.Dispatcher` on the GUI thread at startup and the adder calls
+  that, which Qt delivers on the GUI thread. Checked against Calibre 9.14: a
+  `singleShot` from a Python thread never ran, the Dispatcher call ran on the
+  main thread.
+- **Two different failures both came back as `500 internal`.** A file that
+  exists but cannot be opened (permissions, or a directory where a book was
+  expected) is now `400 path_unreadable`, and a failure inside Calibre's own
+  copy into the library is now `500 copy_failed` with the path in the
+  message. The 0.6.2 cleanup of the empty row still runs before the error is
+  returned. A missing file is still `path_not_found`. Bindery treats a code it
+  does not know by its status, so older Bindery versions are unaffected.
+- **The release zip carried the test stubs.** The build only left out the
+  `tests` directory, so the plugin root `conftest.py`, which fakes calibre
+  and Qt for pytest, shipped in every zip. It is now excluded by name.
+- **Stale docs.** `docs/protocol.md` now describes 0.6.3, including the
+  Windows share path handling from 0.6.1, the empty row cleanup from 0.6.2,
+  and the one case where a dedupe hit returns 201 rather than 409.
+  `SECURITY.md` lists 0.6.x as supported and no longer suggests the plugin
+  sends the key anywhere; it makes no outbound calls. `CONTRIBUTING.md` has
+  the real tag format, `v-calibre-bridge-X.Y.Z`.
+
+#### Security
+
+- **`GET /v1/health` gave the library path to anyone.** Health is
+  unauthenticated so readiness can be probed without credentials, and it
+  returned the Calibre library path along with the versions. It now returns
+  `library: ""` unless the request carries a valid bearer token. It still
+  never answers 401. Bindery sends its token on health already, so it keeps
+  seeing the path.
+
 ### [0.6.2] - 2026-09-27
 
 #### Fixed

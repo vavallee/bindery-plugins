@@ -81,7 +81,11 @@ def test_health_endpoint(handler_factory):
     handler_cls = handler_factory.make_handler(api_key="secret", get_db=lambda: db)
     httpd, port = _serve(handler_cls)
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/health", timeout=5) as resp:
+        # Bindery sends its bearer on health; the library path needs it since 0.6.3.
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/health", headers={"Authorization": "Bearer secret"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200
             payload = json.loads(resp.read().decode("utf-8"))
         assert payload["plugin_version"]

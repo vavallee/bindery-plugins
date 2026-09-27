@@ -16,6 +16,10 @@ import zipfile
 
 EXCLUDE_DIRS = {"__pycache__", "tests", ".pytest_cache", ".mypy_cache"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
+# Test scaffolding that lives beside the plugin rather than under tests/. The
+# plugin root conftest.py stubs calibre and Qt for pytest; Calibre never reads
+# it, so it has no business in the artefact users install.
+EXCLUDE_FILES = {"conftest.py"}
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -80,6 +84,8 @@ def build(
             if any(part in EXCLUDE_DIRS for part in rel.parts):
                 continue
             if path.suffix in EXCLUDE_SUFFIXES:
+                continue
+            if path.name in EXCLUDE_FILES:
                 continue
             zf.write(path, rel.as_posix())
             members.add(rel.as_posix())
