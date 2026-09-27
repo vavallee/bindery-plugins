@@ -7,6 +7,20 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.6.1] - 2026-09-27
+
+#### Fixed
+
+- **Books on a Windows network share with a long path failed to add.**
+  Calibre's `make_long_path_useable` prefixes `\\?\` to any Windows path
+  over 200 characters but does not handle UNC paths, so a book Bindery sent
+  as `\\server\share\...` (which is what a push path remap to a share
+  produces) became `\\?\\\server\...` and every such push failed with
+  `500: [Errno 22] Invalid argument`. The bridge now hands Calibre share paths
+  in the extended `\\?\UNC\server\share\...` form, with separators
+  normalised, which Calibre leaves alone. Drive letter paths and non Windows
+  hosts are unchanged. Reproduced and verified against Calibre 9.14.
+
 ### [0.6.0] - 2026-09-22
 
 #### Fixed

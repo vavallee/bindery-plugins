@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-PLUGIN_VERSION = "0.6.0"
+PLUGIN_VERSION = "0.6.1"
 
 # Optional protocol features. A client that understands none of them still
 # works: everything 0.6.0 adds is a new endpoint, a new response field or a

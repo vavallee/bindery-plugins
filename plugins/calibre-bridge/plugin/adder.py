@@ -1,4 +1,5 @@
 import logging
+import ntpath
 import os
 import pathlib
 from typing import Any, NamedTuple
@@ -24,6 +25,32 @@ MAX_COVER_BYTES = 16 * 1024 * 1024
 # Cache.create_book_entry: ``mi.title = mi.title or _('Unknown')``), so a
 # metadata update must treat them as empty rather than as a user's own value.
 _PLACEHOLDERS = frozenset({"", "unknown"})
+
+
+_WINDOWS = os.name == "nt"
+
+
+def _calibre_safe_path(path: str, windows: bool | None = None) -> str:
+    """Give Calibre a network share path it can open at any length.
+
+    Calibre's ``make_long_path_useable`` prefixes ``\\\\?\\`` to any Windows path
+    over 200 characters without handling UNC, so ``\\\\server\\share\\...``
+    becomes ``\\\\?\\\\\\server\\...``, which Windows rejects with
+    ``[Errno 22] Invalid argument``. A share path is therefore rewritten into
+    the extended form ``\\\\?\\UNC\\server\\share\\...`` up front, which Calibre
+    leaves alone because it already carries the prefix. Separators are
+    normalised first, since the extended form turns off Windows' own
+    normalisation and Bindery's push path remap can produce mixed ones.
+    Anything that is not a share path is returned unchanged.
+    """
+    if windows is None:
+        windows = _WINDOWS
+    if not windows:
+        return path
+    normalised = ntpath.normpath(path)
+    if normalised.startswith("\\\\") and not normalised.startswith("\\\\?\\"):
+        return "\\\\?\\UNC\\" + normalised[2:]
+    return path
 
 
 class PathForbidden(ValueError):
@@ -100,6 +127,7 @@ def add_book_detailed(
     if not fmt:
         raise BadFormat(f"Cannot determine book format from extension: {path!r}")
     api = db.new_api
+    path = _calibre_safe_path(path)
     with open(path, "rb") as f:
         mi = get_metadata(f, os.path.splitext(path)[1][1:])
     apply_bindery_metadata(mi, metadata)
@@ -360,6 +388,7 @@ def _apply_cover(mi: Any, metadata: dict[str, Any] | None, ingest_root: str) -> 
     except ValueError as exc:
         _log.warning("cover rejected: %s", exc)
         return False
+    cover_path = _calibre_safe_path(cover_path)
     try:
         size = os.path.getsize(cover_path)
         if size > MAX_COVER_BYTES:
@@ -422,12 +451,12 @@ def probe_path(path: str, ingest_root: str = "") -> dict[str, Any]:
     filesystem outside it either.
     """
     _check_ingest_path(path, ingest_root)
-    exists = os.path.exists(path)
+    exists = os.path.exists(_calibre_safe_path(path))
     return {
         "path": path,
         "exists": exists,
-        "readable": bool(exists and os.access(path, os.R_OK)),
-        "isDir": bool(exists and os.path.isdir(path)),
+        "readable": bool(exists and os.access(_calibre_safe_path(path), os.R_OK)),
+        "isDir": bool(exists and os.path.isdir(_calibre_safe_path(path))),
     }
 
 
