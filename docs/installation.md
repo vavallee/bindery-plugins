@@ -131,7 +131,7 @@ Set `calibreImage` to the image your Calibre `Deployment` already runs.
 1. Copy `argocd/application.yaml` into your homelab GitOps repo.
 2. Adjust `spec.source.repoURL`, `spec.destination`, and the values to point at
    your environment. The important keys are:
-   - `pluginVersion`: the plugin release to install, for example `"0.5.0"`
+   - `pluginVersion`: the plugin release to install, for example `"0.6.3"`
    - `pluginName`: the plugin's registered name, `"Bindery Bridge"`. It has to
      match the `name` attribute in `plugins/calibre-bridge/__init__.py`,
      because that is the key Calibre stores in its registry.
