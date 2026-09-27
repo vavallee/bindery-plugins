@@ -138,6 +138,15 @@ def add_book_detailed(
     if bindery_id:
         existing = _existing_book_id(api, identifiers, mi)
         if existing:
+            if _is_empty_bindery_row(api, existing, bindery_id):
+                # A row this bridge created for the same Bindery book, left
+                # without a file by an add that failed after the row was
+                # written. Reporting it as a duplicate would leave it empty
+                # for good, so attach the file instead.
+                api.add_format(existing, fmt, path, run_hooks=False)
+                _log.info("attached %s to book %d, which an earlier add left empty", fmt, existing)
+                _schedule_gui_refresh(gui, 1)
+                return AddResult(existing, False, None)
             return AddResult(existing, True, None)
 
     cover_applied = _apply_cover(mi, metadata, ingest_root)
@@ -153,11 +162,20 @@ def add_book_detailed(
     # is what replaces it: an exact identifier match first, then
     # find_identical_books, which requires a superset of the authors as well
     # as a fuzzy title match and so does not have that failure mode.
-    ids, _dups = api.add_books(
-        [(mi, {fmt: path})],
-        add_duplicates=bool(bindery_id),
-        run_hooks=False,
-    )
+    try:
+        ids, _dups = api.add_books(
+            [(mi, {fmt: path})],
+            add_duplicates=bool(bindery_id),
+            run_hooks=False,
+        )
+    except Exception:
+        # add_books writes the row before it copies the file, so a copy that
+        # fails (a path Calibre cannot open, for one) leaves a book with no
+        # format behind. Remove it so the library does not fill with empty
+        # records and the next push is not taken for a duplicate.
+        if bindery_id:
+            _remove_empty_bindery_row(api, bindery_id)
+        raise
     if ids:
         _schedule_gui_refresh(gui, len(ids))
         return AddResult(int(ids[0]), False, cover_applied)
@@ -318,6 +336,33 @@ def _is_placeholder(value: Any) -> bool:
     if not isinstance(value, str):
         return _is_empty(value)
     return value.strip().lower() in _PLACEHOLDERS
+
+
+def _is_empty_bindery_row(api: Any, book_id: int, bindery_id: str) -> bool:
+    """True when ``book_id`` carries this ``bindery`` identifier and no format.
+
+    Only a row matched on Bindery's own identifier qualifies. An empty row a
+    user made by hand, a wishlist entry for example, is never filled in.
+    """
+    try:
+        if api.formats(book_id):
+            return False
+        ids = api.field_for("identifiers", book_id) or {}
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("could not inspect book %d: %s", book_id, exc)
+        return False
+    return str(ids.get("bindery", "")).strip().lower() == bindery_id.strip().lower()
+
+
+def _remove_empty_bindery_row(api: Any, bindery_id: str) -> None:
+    """Remove the formatless row a failed ``add_books`` left for ``bindery_id``."""
+    try:
+        orphan = _book_id_for_identifier(api, "bindery", bindery_id)
+        if orphan and _is_empty_bindery_row(api, orphan, bindery_id):
+            api.remove_books((orphan,))
+            _log.warning("removed book %d, left without a file by a failed add", orphan)
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.warning("could not remove the empty row a failed add left: %s", exc)
 
 
 def _existing_book_id(api: Any, identifiers: dict[str, str], mi: Any) -> int:

@@ -7,6 +7,22 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.6.2] - 2026-09-27
+
+#### Fixed
+
+- **A failed add left an empty book behind, and every later push took it
+  for a duplicate.** Calibre's `add_books` writes the book row before it
+  copies the file, so when the copy failed (the long share path bug fixed in
+  0.6.1 did this to 15 books in one Push all) the row stayed with no format.
+  The next push matched it on the `bindery` identifier and reported "already
+  in Calibre", so the book never got its file. A failed add now removes the
+  row it left, and a push that matches a formatless row carrying the same
+  `bindery` identifier attaches the file to it instead of reporting a
+  duplicate, which repairs rows earlier versions left. An empty row matched
+  on any other identifier, such as a wishlist entry made by hand, is still
+  left alone. Verified against Calibre 9.14.
+
 ### [0.6.1] - 2026-09-27
 
 #### Fixed

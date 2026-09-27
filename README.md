@@ -9,7 +9,7 @@ codebase.
 
 | Name             | Target       | Path                        | Status  |
 |------------------|--------------|-----------------------------|---------|
-| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.6.1  |
+| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.6.2  |
 
 ### What Bindery Bridge exposes
 
