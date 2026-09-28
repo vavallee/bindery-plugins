@@ -45,6 +45,10 @@ class BinderyBridgeAction(InterfaceAction):
         # thread the Dispatcher delivers to. Held on self so it is not
         # collected while the server still calls it.
         self._on_added = _gui_thread_dispatcher(self._refresh_gui)
+        # The same, for a push that changed a row already in the view (a
+        # format added to it, or an empty row repaired). books_added would
+        # insert a phantom row at the top of the model for those.
+        self._on_updated = _gui_thread_dispatcher(self._refresh_gui_row)
         self.qaction.triggered.connect(self.show_dialog)
         self._start_server()
 
@@ -58,6 +62,20 @@ class BinderyBridgeAction(InterfaceAction):
             self.gui.tags_view.recount()
         except Exception as exc:
             _log.debug("Calibre GUI refresh failed: %s", exc)
+
+    def _refresh_gui_row(self, book_id: int) -> None:
+        """Redraw a book that was already in the library. Runs on the GUI thread.
+
+        ``BooksModel.refresh_ids(ids, current_row=-1)`` (checked on Calibre
+        9.14) re-reads those rows from the database and repaints them, which
+        is what a new format on an existing row needs. The tag browser counts
+        formats, so it is recounted as well.
+        """
+        try:
+            self.gui.library_view.model().refresh_ids([book_id])
+            self.gui.tags_view.recount()
+        except Exception as exc:
+            _log.debug("Calibre GUI row refresh failed: %s", exc)
 
     def _start_server(self) -> None:
         _log.debug("_start_server called")
@@ -77,6 +95,7 @@ class BinderyBridgeAction(InterfaceAction):
                     ingest_root=cfg.get("ingest_root", ""),
                     max_body_bytes=int(cfg.get("max_body_bytes", 64 * 1024 * 1024)),
                     on_added=self._on_added,
+                    on_updated=self._on_updated,
                 )
                 self.gui.status_bar.show_message(
                     f"Bindery Bridge listening on {cfg['bind_host']}:{cfg['port']}",

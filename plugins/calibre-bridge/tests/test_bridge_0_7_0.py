@@ -11,10 +11,14 @@ yet. A match on any other rung can be a book the user curated, and it never
 gets a file added.
 """
 
+import sys
+import threading
 from unittest.mock import MagicMock
 
 import pytest
 
+from .test_bridge_0_6_3 import _cleanup_genesis, _FakeDispatcher, _genesis
+from .test_config import _cleanup_action, _load_init_module, _make_action_stubs
 from .test_dedupe_ladder import FakeDB, FakeMetadata, _book
 from .test_empty_rows import FormatLibrary
 
@@ -72,6 +76,7 @@ def test_a_pdf_after_an_epub_joins_the_same_row(adder, tmp_path):
     assert lib.formats(book_id) == ("EPUB", "PDF")
     assert len(lib.rows) == 1
     assert lib.add_format_kwargs == [{"replace": False, "run_hooks": False}]
+    # No on_updated, as from a pre 0.7.0 caller: falls back to on_added.
     assert refreshed == [1]
     # A row that already had a file keeps its cover.
     assert result.cover_applied is None
@@ -303,3 +308,177 @@ def test_health_advertises_add_format(bridge_handlers, serve_bridge):
     assert status == 200
     assert "add_format" in payload["capabilities"]
     assert payload["plugin_version"] == "0.7.0"
+
+
+# ── GUI refresh: an existing row is redrawn, not inserted ────────────────────
+
+
+def _refreshes():
+    added, updated = [], []
+    return added, updated, {"on_added": added.append, "on_updated": updated.append}
+
+
+def test_a_joined_format_refreshes_the_row_not_a_new_one(adder, tmp_path):
+    lib = FormatLibrary()
+    book_id = _epub_then(adder, lib, tmp_path)
+    added, updated, hooks = _refreshes()
+
+    result = _push(adder, lib, _book(tmp_path, "book.pdf"), **hooks)
+
+    assert result.format_added is True
+    assert updated == [book_id]
+    assert added == []
+
+
+def test_a_repaired_empty_row_refreshes_the_row_not_a_new_one(adder, tmp_path):
+    lib = FormatLibrary()
+    ghost = lib.seed("Eight Stories", ["Isaac Asimov"], {"bindery": "42"})
+    added, updated, hooks = _refreshes()
+
+    result = _push(adder, lib, _book(tmp_path), add_format=False, **hooks)
+
+    assert result.format_added is True
+    assert updated == [ghost]
+    assert added == []
+
+
+def test_a_fresh_add_still_uses_on_added(adder, tmp_path):
+    lib = FormatLibrary()
+    added, updated, hooks = _refreshes()
+
+    result = _push(adder, lib, _book(tmp_path), **hooks)
+
+    assert (result.duplicate, result.format_added) == (False, False)
+    assert added == [1]
+    assert updated == []
+
+
+def test_a_duplicate_refreshes_nothing(adder, tmp_path):
+    lib = FormatLibrary()
+    _epub_then(adder, lib, tmp_path)
+    added, updated, hooks = _refreshes()
+
+    result = _push(adder, lib, _book(tmp_path, "again.epub"), **hooks)
+
+    assert result.duplicate is True
+    assert (added, updated) == ([], [])
+
+
+def test_a_failing_on_updated_does_not_fail_the_push(adder, tmp_path):
+    lib = FormatLibrary()
+    book_id = _epub_then(adder, lib, tmp_path)
+
+    def broken(_book_id):
+        raise RuntimeError("GUI is closing")
+
+    result = _push(adder, lib, _book(tmp_path, "book.pdf"), on_updated=broken)
+
+    assert (result.book_id, result.format_added) == (book_id, True)
+
+
+def test_handler_passes_on_updated_to_the_adder(bridge_handlers, serve_bridge, tmp_path):
+    db = _wire_db()
+    added, updated = [], []
+    bridge = serve_bridge(
+        bridge_handlers.make_handler(
+            api_key="", get_db=lambda: db, on_added=added.append, on_updated=updated.append
+        )
+    )
+
+    status, _payload, _ = bridge.call(
+        "POST",
+        "/v1/books",
+        body={
+            "path": _book(tmp_path, "book.pdf"),
+            "addFormat": True,
+            "metadata": {"identifiers": {"bindery": "42"}},
+        },
+    )
+
+    assert status == 201
+    assert (added, updated) == ([], [7])
+
+
+def test_bridge_server_forwards_on_updated(bridge_handlers, tmp_path):
+    import importlib
+
+    from .conftest import Bridge, free_port
+
+    status_mod = importlib.import_module("status")
+    bplugin = sys.modules["calibre_plugins.bindery_bridge.plugin"]
+    bplugin.status = status_mod
+    sys.modules["calibre_plugins.bindery_bridge.plugin.status"] = status_mod
+    sys.modules["calibre_plugins.bindery_bridge.plugin.handlers"] = bridge_handlers
+    sys.modules.pop("server", None)
+    server_mod = importlib.import_module("server")
+
+    db = _wire_db()
+    updated = []
+    srv = server_mod.BridgeServer()
+    port = free_port()
+    srv.start(
+        port=port, bind_host="127.0.0.1", api_key="", get_db=lambda: db, on_updated=updated.append
+    )
+    try:
+        client = Bridge.__new__(Bridge)
+        client.port = port
+        status, _payload, _ = client.call(
+            "POST",
+            "/v1/books",
+            body={
+                "path": _book(tmp_path, "book.pdf"),
+                "addFormat": True,
+                "metadata": {"identifiers": {"bindery": "42"}},
+            },
+        )
+    finally:
+        srv.stop()
+        sys.modules.pop("server", None)
+        sys.modules.pop("status", None)
+    assert status == 201
+    assert updated == [7]
+
+
+def test_genesis_builds_an_on_updated_dispatcher_that_refreshes_the_row():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    _FakeDispatcher.made.clear()
+    try:
+        action = _genesis(stubs, mod, mock_server_cls, mock_cfg, with_dispatcher=True)
+
+        on_updated = action._on_updated
+        assert isinstance(on_updated, _FakeDispatcher)
+        assert on_updated is not action._on_added
+        assert on_updated.constructed_on is threading.main_thread()
+        assert mock_server_inst.start.call_args.kwargs["on_updated"] is on_updated
+
+        on_updated(7)
+        model = action.gui.library_view.model()
+        model.refresh_ids.assert_called_once_with([7])
+        model.books_added.assert_not_called()
+        action.gui.tags_view.recount.assert_called_once_with()
+    finally:
+        _cleanup_genesis(stubs)
+
+
+def test_genesis_without_calibre_gui2_has_no_on_updated():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        action = _genesis(stubs, mod, mock_server_cls, mock_cfg, with_dispatcher=False)
+        assert action._on_updated is None
+        assert mock_server_inst.start.call_args.kwargs["on_updated"] is None
+    finally:
+        _cleanup_genesis(stubs)
+
+
+def test_refresh_gui_row_survives_a_broken_gui():
+    stubs = _make_action_stubs()
+    mod, _cls, _inst, _cfg = _load_init_module(stubs)
+    try:
+        action = mod.BinderyBridgeAction.__new__(mod.BinderyBridgeAction)
+        action.gui = MagicMock()
+        action.gui.library_view.model.side_effect = RuntimeError("closing")
+        action._refresh_gui_row(7)
+    finally:
+        _cleanup_action(stubs)

@@ -375,6 +375,10 @@ keeps its cover and the response has no `cover_applied`. A metadata or cover
 problem at this point is logged and does not fail the request, since the file
 is already in the library.
 
+In the Calibre window the row is redrawn in place (`BooksModel.refresh_ids`)
+rather than announced as a new book, so the new format shows up without a
+Ctrl+R.
+
 The file is added with Calibre's `add_format(..., replace=False)`. A failure
 while Calibre copies it is `500` with `copy_failed`, and the row is left as it
 was. If another push put the same format on the row in between, Calibre

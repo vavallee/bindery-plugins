@@ -126,6 +126,7 @@ def add_book(
     ingest_root: str = "",
     on_added: Callable[[int], Any] | None = None,
     add_format: bool = False,
+    on_updated: Callable[[int], Any] | None = None,
 ) -> tuple[int, bool]:
     """Add a book to the Calibre library. Returns ``(book_id, duplicate)``.
 
@@ -140,6 +141,7 @@ def add_book(
         ingest_root=ingest_root,
         on_added=on_added,
         add_format=add_format,
+        on_updated=on_updated,
     )
     return result.book_id, result.duplicate
 
@@ -152,6 +154,7 @@ def add_book_detailed(
     ingest_root: str = "",
     on_added: Callable[[int], Any] | None = None,
     add_format: bool = False,
+    on_updated: Callable[[int], Any] | None = None,
 ) -> AddResult:
     """Add a book to the Calibre library.
 
@@ -178,6 +181,11 @@ def add_book_detailed(
     :class:`SourceUnreadable`; a failure while Calibre copies it into the
     library raises :class:`CopyFailed`. A missing file still raises
     ``FileNotFoundError``.
+
+    ``on_updated`` is the counterpart of ``on_added`` for a push that changed
+    a row already in the library rather than creating one: it is called with
+    that row's id, so the GUI can redraw the row instead of inserting a new
+    one. When it is None those pushes fall back to ``on_added``, as in 0.6.3.
 
     ``add_format`` lets a second file of the same Bindery book (a PDF after
     an EPUB) join the row the first one made instead of coming back as a
@@ -221,7 +229,7 @@ def add_book_detailed(
                     add_format,
                 )
                 if attached is not None:
-                    _schedule_gui_refresh(gui, 1, on_added)
+                    _schedule_gui_row_refresh(gui, attached.book_id, on_added, on_updated)
                     return attached
             return AddResult(match.book_id, True, None)
 
@@ -711,6 +719,30 @@ def probe_path(path: str, ingest_root: str = "") -> dict[str, Any]:
         "readable": bool(exists and os.access(_calibre_safe_path(path), os.R_OK)),
         "isDir": bool(exists and os.path.isdir(_calibre_safe_path(path))),
     }
+
+
+def _schedule_gui_row_refresh(
+    gui: Any | None,
+    book_id: int,
+    on_added: Callable[[int], Any] | None = None,
+    on_updated: Callable[[int], Any] | None = None,
+) -> None:
+    """Redraw a row that was already in the library, on the GUI thread.
+
+    ``on_updated`` is a Dispatcher the action built on the GUI thread, like
+    ``on_added``, and it calls ``BooksModel.refresh_ids([book_id])``.
+    ``books_added`` is wrong for an existing row: Calibre implements it as a
+    ``beginInsertRows`` at row 0, which tells the view a row appeared that the
+    model does not have. Without ``on_updated`` (a caller from before 0.7.0)
+    this falls back to the ``on_added`` refresh the 0.6.2 repair used.
+    """
+    if on_updated is None:
+        _schedule_gui_refresh(gui, 1, on_added)
+        return
+    try:
+        on_updated(book_id)
+    except Exception as exc:
+        _log.debug("Calibre GUI row refresh dispatch failed: %s", exc)
 
 
 def _schedule_gui_refresh(

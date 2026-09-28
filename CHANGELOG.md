@@ -34,6 +34,16 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
   metadata filled and the `coverPath` cover, which it used to go without, and
   the response carries `format_added: true`.
 
+#### Fixed
+
+- **A push that changed an existing row told the Calibre window a new book
+  had appeared.** The GUI refresh after the empty row repair called
+  `books_added(1)`, which Calibre implements as an insert at the top of the
+  view, for a row that was already there. Both that repair and the new
+  format join now redraw the row itself with `refresh_ids([id])` through a
+  second dispatcher built on the GUI thread, then recount the tag browser. A
+  fresh add still uses `books_added`.
+
 ### [0.6.3] - 2026-09-27
 
 #### Fixed

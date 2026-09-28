@@ -92,6 +92,7 @@ def make_handler(
     ingest_root: str = "",
     max_body_bytes: int = 64 * 1024 * 1024,
     on_added: Callable[[int], Any] | None = None,
+    on_updated: Callable[[int], Any] | None = None,
 ) -> type:
     from calibre_plugins.bindery_bridge.plugin import adder as adder_mod
 
@@ -300,6 +301,7 @@ def make_handler(
                     metadata=metadata,
                     ingest_root=ingest_root,
                     on_added=on_added,
+                    on_updated=on_updated,
                     add_format=bool(add_format),
                 )
             except (FileNotFoundError, ValueError) as exc:

@@ -241,7 +241,8 @@ def test_genesis_builds_a_dispatcher_and_hands_it_to_the_server():
     try:
         action = _genesis(stubs, mod, mock_server_cls, mock_cfg, with_dispatcher=True)
 
-        assert len(_FakeDispatcher.made) == 1
+        # 0.7.0 builds a second one, on_updated; see test_bridge_0_7_0.
+        assert len(_FakeDispatcher.made) == 2
         dispatcher = _FakeDispatcher.made[0]
         assert dispatcher.constructed_on is threading.main_thread()
         assert action._on_added is dispatcher

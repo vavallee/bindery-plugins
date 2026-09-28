@@ -32,6 +32,7 @@ class BridgeServer:
         ingest_root: str = "",
         max_body_bytes: int = 64 * 1024 * 1024,
         on_added: Callable[[int], Any] | None = None,
+        on_updated: Callable[[int], Any] | None = None,
     ) -> None:
         # Fail closed on network exposure: a non-loopback bind with no API key
         # would expose the unauthenticated add endpoint to the network. Refuse
@@ -49,6 +50,7 @@ class BridgeServer:
             ingest_root=ingest_root,
             max_body_bytes=max_body_bytes,
             on_added=on_added,
+            on_updated=on_updated,
         )
         self._serve(handler_cls, port, bind_host)
         status.set_running(f"{bind_host}:{port}")
