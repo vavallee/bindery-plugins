@@ -50,6 +50,8 @@ DEFAULT_BATCH = 20
 # cursors, so a server bug cannot keep the worker busy forever.
 MAX_PAGES_PER_PASS = 50
 COVER_LIMIT = 16 * 1024 * 1024
+# Bindery caps nack error text at 2000 characters.
+MAX_NACK_ERROR = 2000
 
 # A format is only ever used as a file extension on a name the plugin makes
 # up. Never a server supplied file name.
@@ -81,6 +83,13 @@ class PullStats:
     nacked: int = 0
     ack_failed: int = 0
     skipped: int = 0
+    # Ack or nack answered 409 not_pending or 404: Bindery had already
+    # settled the delivery, so there is nothing left to do.
+    settled: int = 0
+    # Acks of ``add`` deliveries, which is what can make Bindery list a
+    # book's other formats as ``add_format``.
+    acked_adds: int = 0
+    relisted: bool = False
     pending: int | None = None
     status: str = ""
     error: str = ""
@@ -313,18 +322,48 @@ class PullWorker:
         return True
 
     def _drain(self, client: Any, db: Any, expected: str, batch: int, stats: PullStats) -> None:
-        cursor = ""
+        """List and deliver, then list once more if that can unlock formats.
+
+        Bindery holds a book's second format back until the first file of
+        that book is acknowledged, and then lists it as ``add_format``. One
+        extra listing from the start, after a sweep that acked at least one
+        ``add``, puts a two format book into Calibre in one pass instead of
+        two. Never more than one: a Bindery that keeps producing new rows is
+        left for the next pass.
+        """
         seen: set[str] = set()
+        if not self._sweep(client, db, expected, batch, stats, seen):
+            return
+        if stats.acked_adds:
+            stats.relisted = True
+            self._sweep(client, db, expected, batch, stats, seen)
+
+    def _sweep(
+        self,
+        client: Any,
+        db: Any,
+        expected: str,
+        batch: int,
+        stats: PullStats,
+        seen: set[str],
+    ) -> bool:
+        """One walk through every page. False when the pass has to end.
+
+        Bindery pages by whole book, so a page can hold more than ``batch``
+        rows when one book has more files than that; nothing here assumes
+        otherwise.
+        """
+        cursor = ""
         for _page in range(MAX_PAGES_PER_PASS):
             try:
                 page = client.deliveries(limit=batch, cursor=cursor)
             except bindery_client.BinderyError as exc:
                 self._fail(stats, exc, "deliveries")
-                return
+                return False
             deliveries = page.get("deliveries") or []
             if not isinstance(deliveries, list):
                 stats.error = "Bindery sent a delivery list that is not a list"
-                return
+                return False
             pending = page.get("pending")
             if isinstance(pending, int):
                 stats.pending = pending
@@ -345,11 +384,12 @@ class PullWorker:
                     self._deliver(client, db, delivery, stats)
                 except bindery_client.BinderyUnreachable as exc:
                     self._fail(stats, exc, f"delivery {delivery_id}")
-                    return
+                    return False
             next_cursor = page.get("nextCursor")
             if not deliveries or not next_cursor or not isinstance(next_cursor, str):
-                return
-            cursor = next_cursor
+                return True
+            cursor = str(next_cursor)
+        return True
 
     def _fail(self, stats: PullStats, exc: bindery_client.BinderyError, what: str) -> None:
         stats.error = f"{what}: {exc}"
@@ -434,6 +474,11 @@ class PullWorker:
             except bindery_client.BinderyUnreachable:
                 raise
             except bindery_client.BinderyError as exc:
+                if exc.status == 403 and exc.code == "path_forbidden":
+                    # Bindery will not serve this file (outside its library
+                    # roots, or not a regular file). Retrying cannot help.
+                    self._nack(client, delivery_id, "path_forbidden", str(exc), False, stats)
+                    return
                 _log.warning("pull: download of delivery %s failed: %s", delivery_id, exc)
                 stats.error = f"download {delivery_id}: {exc}"
                 stats.skipped += 1
@@ -480,6 +525,12 @@ class PullWorker:
             try:
                 client.ack(delivery_id, body)
             except bindery_client.BinderyError as exc:
+                if _already_settled(exc):
+                    # Delivered elsewhere, failed, skipped or gone on
+                    # Bindery's side. Nothing to retry and nothing wrong here.
+                    _log.debug("pull: ack of delivery %s not needed: %s", delivery_id, exc)
+                    stats.settled += 1
+                    return
                 # The book is in Calibre; Bindery will list it again and the
                 # dedupe turns the retry into an ``already`` ack.
                 _log.warning("pull: ack of delivery %s failed: %s", delivery_id, exc)
@@ -487,6 +538,8 @@ class PullWorker:
                 stats.error = f"ack {delivery_id}: {exc}"
                 return
             stats.acks.append({"id": delivery_id, **body})
+            if action == "add":
+                stats.acked_adds += 1
             status.add_pull_delivered(1)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -522,14 +575,31 @@ class PullWorker:
         stats: PullStats,
     ) -> None:
         stats.nacked += 1
-        body = {"code": code, "error": message, "retryable": retryable}
+        body = {"code": code, "error": message[:MAX_NACK_ERROR], "retryable": retryable}
         try:
             client.nack(delivery_id, body)
         except bindery_client.BinderyUnreachable:
             raise
         except bindery_client.BinderyError as exc:
+            if _already_settled(exc):
+                _log.debug("pull: nack of delivery %s not needed: %s", delivery_id, exc)
+                stats.settled += 1
+                return
             _log.warning("pull: nack of delivery %s failed: %s", delivery_id, exc)
             stats.error = f"nack {delivery_id}: {exc}"
+
+
+def _already_settled(exc: bindery_client.BinderyError) -> bool:
+    """Bindery no longer has this delivery pending: done, move on.
+
+    409 ``not_pending`` on an ack means the row was delivered to another
+    Calibre id, or already failed or was skipped; on a nack, any row that is
+    not pending. 404 is an id Bindery does not know. None of these is a
+    reason to retry or back off.
+    """
+    if isinstance(exc, bindery_client.BinderyUnreachable):
+        return False
+    return bool((exc.status == 409 and exc.code == "not_pending") or exc.status == 404)
 
 
 def _error_code(adder: Any, exc: Exception) -> tuple[str, bool]:

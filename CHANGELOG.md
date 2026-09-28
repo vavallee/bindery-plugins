@@ -37,6 +37,12 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
     of a batch.
   - A lost ack is safe: the delivery comes back on the next pass, the dedupe
     finds the book, and it is acknowledged as `already` without a second row.
+  - A book with several formats lands in one pass. Bindery lists the other
+    formats only after the first is acknowledged, so after acking a new book
+    the plugin lists once more from the start (never more than once).
+  - A file Bindery refuses to serve (`403 path_forbidden`) is reported back
+    as not retryable. An ack or nack that Bindery answers `409 not_pending`
+    or `404` is treated as already settled, not as an error.
   - Checks every minute, backs off to 15 minutes while Bindery is
     unreachable, an hour after a rejected key, and honours `Retry-After`.
     Saving the settings or switching library triggers a pass at once.

@@ -44,18 +44,23 @@ class BinderyState:
         # Per route overrides: route -> list of (status, body, headers), used up in order.
         self.overrides = {}
         self.stream_without_length = False
+        self.acked_books = set()
+        self.list_calls = []
+        self.on_list = None
         self.file_headers = {}
         self.lock = threading.Lock()
 
     def add(self, delivery_id, fmt="epub", action="add", data=b"book bytes", cover=None, **extra):
+        bindery_id = extra.pop("bindery", "7")
+        book_id = extra.pop("book_id", int(bindery_id))
         metadata = extra.pop("metadata", None) or {
             "title": extra.pop("title", "The Dispossessed"),
             "authors": ["Ursula K. Le Guin"],
-            "identifiers": {"bindery": extra.pop("bindery", "7")},
+            "identifiers": {"bindery": bindery_id},
         }
         delivery = {
             "id": delivery_id,
-            "bookId": 7,
+            "bookId": book_id,
             "format": fmt,
             "sizeBytes": len(data),
             "action": action,
@@ -68,6 +73,19 @@ class BinderyState:
 
     def override(self, route, status, body=None, headers=None):
         self.overrides.setdefault(route, []).append((status, body, headers or {}))
+
+    def visible(self):
+        """What Bindery lists: a book's ``add_format`` rows only once one of
+        its files has been acked, as the real queue holds them back."""
+        return [
+            i
+            for i in self.order
+            if i in self.queue
+            and (
+                self.queue[i]["delivery"]["action"] != "add_format"
+                or self.queue[i]["delivery"]["bookId"] in self.acked_books
+            )
+        ]
 
     def pending(self):
         return [i for i in self.order if i in self.queue]
@@ -133,23 +151,32 @@ def make_fake_bindery(state):
                     return
                 query = parse_qs(url.query)
                 limit = int(query.get("limit", ["20"])[0])
-                # The cursor is the last id handed out, so acking what was
-                # listed does not shift the next page.
+                # Keyset on book id, whole books only, as Bindery pages: the
+                # cursor is the last book id, and a page never splits a book,
+                # so it can run past ``limit`` when one book has more files.
                 after = query.get("cursor", [""])[0]
-                pending = state.pending()
-                rest = [i for i in state.order if i in state.queue]
-                if after:
-                    rest = [
-                        i for i in state.order[state.order.index(after) + 1 :] if i in state.queue
-                    ]
-                page = rest[:limit]
-                next_cursor = page[-1] if len(rest) > limit else ""
+                state.list_calls.append((limit, after))
+                if state.on_list is not None:
+                    state.on_list(state)
+                visible = state.visible()
+                books = {}
+                for i in visible:
+                    book = state.queue[i]["delivery"]["bookId"]
+                    if not after or book > int(after):
+                        books.setdefault(book, []).append(i)
+                page, last = [], None
+                for book in sorted(books):
+                    if page and len(page) + len(books[book]) > limit:
+                        break
+                    page.extend(books[book])
+                    last = book
+                more = last is not None and any(b > last for b in books)
                 self._json(
                     200,
                     {
                         "deliveries": [state.queue[i]["delivery"] for i in page],
-                        "nextCursor": next_cursor,
-                        "pending": len(pending),
+                        "nextCursor": str(last) if more else "",
+                        "pending": len(visible),
                     },
                 )
                 return
@@ -203,7 +230,9 @@ def make_fake_bindery(state):
                 with state.lock:
                     if what == "ack":
                         state.acks.append((delivery_id, body))
-                        state.queue.pop(delivery_id, None)
+                        item = state.queue.pop(delivery_id, None)
+                        if item is not None:
+                            state.acked_books.add(item["delivery"]["bookId"])
                     elif what == "nack":
                         state.nacks.append((delivery_id, body))
                         state.queue.pop(delivery_id, None)
@@ -789,6 +818,154 @@ def test_https_with_a_self_signed_cert_needs_the_ca_file(pull, tls_bindery):
     stats = h.run()
     assert stats.added == 1
     assert tls_bindery.acks[0][1]["outcome"] == "added"
+
+
+# ── Bindery PR 2850 additions ────────────────────────────────────────────────
+
+
+def test_a_forbidden_file_is_nacked_path_forbidden_non_retryable(pull, bindery, tempdirs):
+    bindery.add("d1")
+    bindery.override(
+        "file", 403, {"error": "file is outside the library", "code": "path_forbidden"}
+    )
+    h = Harness(pull, bindery.url)
+
+    stats = h.run()
+
+    assert [(i, b["code"], b["retryable"]) for i, b in bindery.nacks] == [
+        ("d1", "path_forbidden", False)
+    ]
+    assert h.library.rows == {}
+    assert not stats.unreachable
+    assert not any(os.path.exists(d) for d in tempdirs)
+
+
+def test_a_not_pending_answer_to_that_nack_is_harmless(pull, bindery):
+    bindery.add("d1")
+    bindery.override("file", 403, {"error": "not a regular file", "code": "path_forbidden"})
+    bindery.override("nack", 409, {"error": "no longer pending", "code": "not_pending"})
+    h = Harness(pull, bindery.url)
+
+    stats = h.run()
+
+    assert (stats.nacked, stats.settled) == (1, 1)
+    assert stats.error == ""
+    assert h.worker.next_delay(stats) == 60
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (409, {"error": "delivered to another id", "code": "not_pending"}),
+        (404, {"error": "no delivery with that id", "code": "not_found"}),
+    ],
+)
+def test_an_ack_bindery_already_settled_is_done(pull, bindery, status, body):
+    bindery.add("d1", bindery="1", title="One")
+    bindery.add("d2", bindery="2", title="Two")
+    bindery.override("ack", status, body)
+    h = Harness(pull, bindery.url)
+
+    stats = h.run()
+
+    # Not a failure: no error, no backoff, and the pass carried on to d2.
+    assert (stats.added, stats.settled, stats.ack_failed) == (2, 1, 0)
+    assert stats.error == ""
+    assert not stats.unreachable
+    assert h.worker.next_delay(stats) == 60
+    assert [a[0] for a in bindery.acks] == ["d2"]
+
+
+def test_an_ack_that_fails_otherwise_is_still_a_failed_ack(pull, bindery):
+    bindery.add("d1")
+    bindery.override("ack", 409, {"error": "something else", "code": "conflict"})
+    stats = Harness(pull, bindery.url).run()
+    assert (stats.ack_failed, stats.settled) == (1, 0)
+    assert stats.error
+
+
+def test_a_page_may_hold_more_rows_than_the_limit(pull, bindery):
+    """A book with more files than ``limit`` comes in one page, never split."""
+    bindery.override(
+        "hello",
+        200,
+        {"binderyVersion": "x", "protocol": 1, "maxBatch": 2, "transport": "pull"},
+    )
+    bindery.add("e", fmt="epub")
+    bindery.add("p", fmt="pdf", action="add_format")
+    bindery.add("m", fmt="mobi", action="add_format")
+    bindery.add("a", fmt="azw3", action="add_format")
+    bindery.add("other", bindery="8", title="Another book")
+    h = Harness(pull, bindery.url)
+
+    stats = h.run()
+
+    assert all(limit == 2 for limit, _cursor in bindery.list_calls)
+    book = h.library.search('identifiers:"=bindery:=7"').pop()
+    assert h.library.formats(book) == ("AZW3", "EPUB", "MOBI", "PDF")
+    assert (stats.added, stats.format_added) == (2, 3)
+    assert bindery.pending() == []
+
+
+def test_a_two_format_book_lands_in_one_pass(pull, bindery):
+    bindery.add("d1", fmt="epub")
+    bindery.add("d2", fmt="pdf", action="add_format")
+    h = Harness(pull, bindery.url)
+
+    stats = h.run()
+
+    assert stats.relisted
+    assert (stats.added, stats.format_added) == (1, 1)
+    # The first listing withheld the PDF; one listing from the start found it.
+    assert [cursor for _limit, cursor in bindery.list_calls] == ["", ""]
+    assert bindery.pending() == []
+
+
+def test_the_re_list_happens_at_most_once(pull, bindery):
+    """A Bindery that grows a new book on every listing cannot loop a pass."""
+    counter = iter(range(100, 200))
+
+    def grow(state):
+        n = next(counter)
+        state.add(f"new{n}", bindery=str(n), title=f"Book {n}")
+
+    bindery.on_list = grow
+    h = Harness(pull, bindery.url)
+
+    stats = h.run()
+
+    assert stats.relisted
+    assert [cursor for _limit, cursor in bindery.list_calls] == ["", ""]
+    assert stats.added == 2
+
+
+def test_no_re_list_without_an_acked_add(pull, bindery):
+    bindery.add("d1", fmt="../evil")
+    stats = Harness(pull, bindery.url).run()
+    assert not stats.relisted
+    assert len(bindery.list_calls) == 1
+
+
+def test_the_limit_sent_is_at_most_twenty(pull, bindery):
+    bindery.override(
+        "hello",
+        200,
+        {"binderyVersion": "x", "protocol": 1, "maxBatch": 50, "transport": "pull"},
+    )
+    bindery.add("d1")
+    Harness(pull, bindery.url).run()
+    assert {limit for limit, _cursor in bindery.list_calls} == {20}
+
+
+def test_a_long_nack_error_is_cut_to_bindery_s_cap(pull, bindery, monkeypatch):
+    bindery.add("d1")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("x" * 5000)
+
+    monkeypatch.setattr(pull.adder, "add_book_detailed", fail)
+    Harness(pull, bindery.url).run()
+    assert len(bindery.nacks[0][1]["error"]) == 2000
 
 
 # ── the action: start, wake, stop ────────────────────────────────────────────

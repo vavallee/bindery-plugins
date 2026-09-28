@@ -523,8 +523,23 @@ The ack body is
 `{"calibreId": int, "outcome": "added" | "already" | "format_added", "coverApplied": bool | null, "library": "<library path>"}`.
 The nack body is `{"code": "<error code>", "error": "<message>", "retryable": bool}`.
 
-Errors are JSON `{"error", "code"}`: `401 unauthorized`, `404`,
-`409 not_in_pull_mode`, and `429 rate_limited` with `Retry-After`.
+Errors are JSON `{"error", "code"}`: `401 unauthorized`, `404 not_found`,
+`409 not_in_pull_mode`, and `429 rate_limited` with `Retry-After`. Bindery
+also answers:
+
+- `403 path_forbidden` from the file route when the recorded path is outside
+  Bindery's library roots or is not a regular file.
+- `409 not_pending` from ack when the row was already delivered to a
+  different Calibre id or has failed or been skipped, and from nack for any
+  row that is not pending. `404 not_found` for an id Bindery does not know.
+- Paging is by whole book: `nextCursor` is the last book id on the page and
+  a page never splits a book, so it can hold more than `limit` rows when one
+  book has more files than that. `limit` above 50 is capped.
+- A book's second format is held back until its first file is acknowledged;
+  until then only the preferred format is listed, as `add`. The others are
+  listed afterwards as `add_format`.
+- A nack `code` must be an identifier (`[a-z0-9_.-]`, at most 64
+  characters) and `error` is capped at 2000 characters.
 
 ### What the plugin does
 
@@ -558,13 +573,22 @@ library changes):
      ingest root restriction because the temp directory is the plugin's own.
    - Ack with the outcome: `added`, `format_added`, or `already` when the
      dedupe ladder found the book.
+   - `403 path_forbidden` on the file is nacked `path_forbidden`, not
+     retryable.
    - An adder failure is nacked with the code the push API would have
      answered: `bad_format` and `path_forbidden` are not retryable,
      `copy_failed`, `path_unreadable` and anything unexpected (`internal`)
      are.
    - The temp directory is removed whatever happened.
-6. A download that fails with an HTTP error is skipped and comes back next
-   pass. A failed ack is logged; the delivery is listed again, the adder finds
+6. After a walk through every page that acknowledged at least one `add`,
+   the plugin lists once more from an empty cursor, so the `add_format` rows
+   that ack released land in the same pass. Only once per pass, so a queue
+   that keeps growing cannot hold the worker.
+7. An ack or nack answered `409 not_pending` or `404` means Bindery has
+   already settled that delivery: it is logged at debug level and the pass
+   moves on, with no error and no backoff.
+8. A download that fails with any other HTTP error is skipped and comes back
+   next pass. A failed ack is logged; the delivery is listed again, the adder finds
    it by its `bindery` identifier and the retry is acked `already`, so
    delivery is at least once and never makes a second row.
 
