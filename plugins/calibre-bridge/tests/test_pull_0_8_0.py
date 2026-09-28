@@ -1039,6 +1039,15 @@ def test_status_summary_reports_pull(pull):
     pull.status.add_pull_delivered(3)
     pull.status.set_pull(last_error="ack d1: HTTP 500")
     assert pull.status.pull_summary() == (
-        "Connected to Bindery; nothing waiting. 3 books delivered since Calibre started. "
+        "Connected to Bindery; nothing waiting. 3 files delivered since Calibre started. "
         "Last error: ack d1: HTTP 500."
     )
+
+
+def test_status_summary_counts_files_not_books(pull):
+    """A two format book is two deliveries, so the count is files."""
+    pull.status.set_pull(
+        enabled=True, detail="Connected to Bindery", last_error="", warning="", delivered=0
+    )
+    pull.status.add_pull_delivered(1)
+    assert "1 file delivered since Calibre started" in pull.status.pull_summary()

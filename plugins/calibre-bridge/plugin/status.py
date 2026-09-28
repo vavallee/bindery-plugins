@@ -81,7 +81,9 @@ def pull_summary() -> str:
         return "Pull from Bindery is off"
     parts = [str(state["detail"] or state["state"] or "Starting")]
     if state["delivered"]:
-        parts.append(f"{state['delivered']} books delivered since Calibre started")
+        n = state["delivered"]
+        noun = "file" if n == 1 else "files"
+        parts.append(f"{n} {noun} delivered since Calibre started")
     if state["last_error"]:
         parts.append(f"Last error: {state['last_error']}")
     if state["warning"]:
