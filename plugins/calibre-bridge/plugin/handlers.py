@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-PLUGIN_VERSION = "0.7.0"
+PLUGIN_VERSION = "0.8.0"
 
 # Optional protocol features. A client that understands none of them still
 # works: everything 0.6.0 adds is a new endpoint, a new response field or a
@@ -21,6 +21,10 @@ CAPABILITIES = [
     # 0.7.0: ``addFormat`` on POST /v1/books puts a second file of the same
     # Bindery book on the row the first one made, instead of a 409.
     "add_format",
+    # 0.8.0: the plugin can fetch deliveries from Bindery's /bridge/v1
+    # routes. Advertised here and in X-Bridge-Capabilities on every pull
+    # request, so both sides see the same list.
+    "pull",
 ]
 
 # Machine readable error codes, sent alongside the human readable ``error``

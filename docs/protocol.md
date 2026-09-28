@@ -4,7 +4,7 @@ The Bindery Bridge Calibre plugin exposes a small HTTP API that Bindery uses to
 add and update books in the running Calibre library without shelling out to
 `calibredb`. All endpoints are prefixed with `/v1/`.
 
-This document describes what the plugin actually implements at 0.7.0. Anything
+This document describes what the plugin actually implements at 0.8.0. Anything
 the code does not do is not in here.
 
 ## Versioning
@@ -108,11 +108,12 @@ Liveness, version and capability probe. Unauthenticated.
 
 ```json
 {
-  "plugin_version": "0.7.0",
+  "plugin_version": "0.8.0",
   "calibre_version": "9.7.0",
   "library": "/media/BOOKS",
   "capabilities": [
-    "book_metadata", "cover", "path_probe", "metadata_update", "error_codes", "add_format"
+    "book_metadata", "cover", "path_probe", "metadata_update", "error_codes", "add_format",
+    "pull"
   ]
 }
 ```
@@ -129,6 +130,7 @@ token (see [Authentication](#authentication)).
 | `metadata_update` | `PATCH /v1/books/{id}` exists |
 | `error_codes` | Every error response carries a `code` |
 | `add_format` | `POST /v1/books` accepts `addFormat` and can answer `format_added`. Since 0.7.0 |
+| `pull` | The plugin can fetch deliveries from Bindery's `/bridge/v1` routes. See [Pull mode](#pull-mode-bindery-side-routes). Since 0.8.0 |
 
 A client SHOULD probe capabilities once and cache them, but SHOULD expire that
 cache: upgrading the plugin under a running Bindery otherwise leaves the client
@@ -463,6 +465,135 @@ No library is touched and no capability is advertised, so nothing the refusal
 was protecting is exposed. The same state is shown as a persistent line in the
 plugin's own configuration dialog.
 
+## Pull mode (Bindery side routes)
+
+Everything above is served by the plugin and called by Bindery. Pull mode
+turns that around: the plugin connects out to Bindery, lists what is waiting,
+downloads each file into a local temp directory, adds it through the same code
+path as `POST /v1/books`, and acknowledges. Calibre then needs no shared drive,
+no path remap, no inbound firewall rule and no fixed address. The push server
+keeps running unchanged; pull is opt in on both sides (the plugin's "Pull from
+Bindery" setting, and Bindery's Settings, Calibre, Transport).
+
+These routes are served by Bindery, not by the plugin. This section is the
+contract both sides build against, protocol `1`.
+
+### Requests
+
+`{base}` is the Bindery URL set in the plugin, including any URL base
+(`https://bindery.example.net` or `http://192.168.1.20:8787/bindery`). Every
+request carries:
+
+| Header | Value |
+|---|---|
+| `Authorization` | `Bearer <api_key>`, the plugin's own `api_key`, which Bindery stores as `calibre.plugin_api_key`. The same key authenticates both directions |
+| `X-Bridge-Version` | The plugin version, e.g. `0.8.0` |
+| `X-Bridge-Capabilities` | Comma separated, exactly the list `GET /v1/health` advertises |
+| `User-Agent` | `calibre-bridge/<version>` |
+
+| Route | Answer |
+|---|---|
+| `GET {base}/bridge/v1/hello` | `{"binderyVersion", "protocol": 1, "maxBatch": 20, "transport": "pull" \| "push"}` |
+| `GET {base}/bridge/v1/deliveries?limit=N&cursor=C` | `{"deliveries": [...], "nextCursor", "pending"}`, or `409 {"code": "not_in_pull_mode"}` |
+| `GET {base}/bridge/v1/deliveries/{id}/file` | The book, `application/octet-stream` with `Content-Length` |
+| `GET {base}/bridge/v1/deliveries/{id}/cover` | The cover image, or `404` when there is none |
+| `POST {base}/bridge/v1/deliveries/{id}/ack` | `204` |
+| `POST {base}/bridge/v1/deliveries/{id}/nack` | `204` |
+
+Each delivery is:
+
+```json
+{
+  "id": "d-123",
+  "bookId": 42,
+  "format": "epub",
+  "sizeBytes": 734003,
+  "action": "add",
+  "metadata": { "title": "...", "authors": ["..."], "identifiers": {"bindery": "42"} },
+  "hasCover": true
+}
+```
+
+`action` is `add` or `add_format` (the second file of a book, the same as
+`addFormat: true` on a push). `metadata` has the same shape as the `metadata`
+object of `POST /v1/books`, except that `coverPath` is ignored: in pull mode
+only the plugin sets it, to the cover it downloaded.
+
+The ack body is
+`{"calibreId": int, "outcome": "added" | "already" | "format_added", "coverApplied": bool | null, "library": "<library path>"}`.
+The nack body is `{"code": "<error code>", "error": "<message>", "retryable": bool}`.
+
+Errors are JSON `{"error", "code"}`: `401 unauthorized`, `404`,
+`409 not_in_pull_mode`, and `429 rate_limited` with `Retry-After`.
+
+### What the plugin does
+
+One pass, every `pull_interval_seconds` (60 by default, first pass about ten
+seconds after Calibre starts, and at once after the settings are saved or the
+library changes):
+
+1. Nothing when pull is off, no Bindery URL is set, or no library is open.
+2. When pull was turned on it recorded the open library's id
+   (`Cache.library_id`). While any other library is open the pass stops with
+   "Paused: a different library is open" and contacts nothing. The same check
+   runs before every delivery, so a switch in the middle of a batch leaves the
+   rest queued.
+3. `hello`. `transport: "push"` sets "Bindery is set to push; switch Settings,
+   Calibre, Transport to Pull" and checks again in five minutes.
+4. `deliveries`, `limit` at most 20 (or `maxBatch` if smaller), following
+   `nextCursor` until it is empty, at most 50 pages per pass.
+5. For each delivery, in a fresh `tempfile.mkdtemp(prefix="bindery-pull-")`:
+   - `format` must be a lower case token, `^[a-z0-9]{1,10}$` (`kepub.epub`
+     is filed as `kepub`). Anything else is nacked `bad_format`, not
+     retryable, without downloading. The file is written as `book.<format>`;
+     a file name from Bindery, in the delivery or in `Content-Disposition`,
+     is never used.
+   - The file is streamed to disk and refused past `max_download_bytes`
+     (1 GiB), on the `Content-Length` before reading and again while
+     reading. Too large is nacked `body_too_large`, not retryable.
+   - With `hasCover`, the cover is fetched too (capped at 16 MiB). A cover
+     that fails does not fail the book; the ack then says
+     `coverApplied: false`.
+   - The book goes through the same adder as `POST /v1/books`, with no
+     ingest root restriction because the temp directory is the plugin's own.
+   - Ack with the outcome: `added`, `format_added`, or `already` when the
+     dedupe ladder found the book.
+   - An adder failure is nacked with the code the push API would have
+     answered: `bad_format` and `path_forbidden` are not retryable,
+     `copy_failed`, `path_unreadable` and anything unexpected (`internal`)
+     are.
+   - The temp directory is removed whatever happened.
+6. A download that fails with an HTTP error is skipped and comes back next
+   pass. A failed ack is logged; the delivery is listed again, the adder finds
+   it by its `bindery` identifier and the retry is acked `already`, so
+   delivery is at least once and never makes a second row.
+
+Backoff:
+
+| Situation | Next pass |
+|---|---|
+| Success, or nothing waiting | `pull_interval_seconds` |
+| No answer, or a 5xx | Doubles each time, from twice the interval up to 15 minutes, back to normal after the next success |
+| `429` | `Retry-After` seconds (at most an hour) |
+| `401` | One hour, status "Bindery rejected the API key" |
+| `409 not_in_pull_mode` or `transport: "push"` | Five minutes |
+| `404` on `hello` (a Bindery without these routes) | 15 minutes |
+
+### Transport security
+
+- HTTPS is verified against the system trust store (on Windows, Calibre's
+  Python reads the Windows store) plus the optional `ca_file` PEM bundle,
+  for a private CA or a self signed Bindery. There is no setting that turns
+  verification off.
+- Plain `http` is accepted, since a LAN Bindery without TLS is common. When
+  the host is not loopback the status line says that the key and every book
+  cross the network unencrypted.
+- Redirects are refused, not followed. urllib forwards the `Authorization`
+  header on a redirect, so following one would hand the key to wherever it
+  pointed. Set the Bindery URL to the final address.
+- Only `http` and `https` URLs are accepted, with no user name, password,
+  query or fragment. Every request times out after 30 seconds.
+
 ## Compatibility rules for implementers
 
 - Adding a new optional request field is non breaking.
@@ -479,7 +610,7 @@ plugin's own configuration dialog.
   breaking for pre 0.6.0 clients, which have nothing else to read. Add a `code`
   and leave the string alone.
 
-### What an older Bindery sees on 0.7.0
+### What an older Bindery sees on 0.8.0
 
 | Client | Behaviour |
 |---|---|
@@ -489,3 +620,4 @@ plugin's own configuration dialog.
 | Any client | Sees `path_unreadable` (400) and `copy_failed` (500) where 0.6.2 sent `internal` (500). A client branching on status alone sees an unreadable path move from 500 to 400 |
 | Any client without the token | Gets `library: ""` from health. Bindery sends its token on every request, health included |
 | Any client not sending `addFormat` | A second format of the same Bindery book is still `409`, as on 0.6.3. The repair of a formatless row still happens, and its `201` now also carries `format_added: true`, fills empty metadata and applies `coverPath` |
+| Any Bindery without `/bridge/v1` | Nothing changes unless pull is turned on in the plugin. If it is, `hello` answers `404` and the plugin says so in its status line and checks again every 15 minutes; the push API keeps working |

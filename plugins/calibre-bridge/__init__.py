@@ -5,11 +5,12 @@ class BinderyBridge(InterfaceActionBase):
     name = "Bindery Bridge"
     description = (
         "Exposes a versioned HTTP API that lets Bindery add and update books "
-        "in the running Calibre library without shelling out to calibredb."
+        "in the running Calibre library without shelling out to calibredb, "
+        "or fetches queued books from Bindery in pull mode."
     )
     supported_platforms = ["windows", "osx", "linux"]
     author = "vavallee"
-    version = (0, 7, 0)
+    version = (0, 8, 0)
     minimum_calibre_version = (6, 0, 0)
 
     actual_plugin = "calibre_plugins.bindery_bridge.plugin:BinderyBridgeAction"

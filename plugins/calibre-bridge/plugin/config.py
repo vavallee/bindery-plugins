@@ -2,6 +2,7 @@ import os
 
 from calibre.utils.config import JSONConfig
 from qt.core import (
+    QCheckBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -22,6 +23,23 @@ DEFAULTS = {
     # Upper bound on request body size to avoid a remote OOM via a large
     # Content-Length. 64 MiB is comfortably above any metadata payload.
     "max_body_bytes": 64 * 1024 * 1024,
+    # Pull mode (0.8.0): the plugin connects out to Bindery and fetches queued
+    # books, so Calibre needs no shared drive and no inbound port. Off by
+    # default; the push server above keeps running either way.
+    "pull_enabled": False,
+    # Bindery's own address, including any URL base, e.g.
+    # https://bindery.example.net or http://192.168.1.20:8787/bindery
+    "bindery_url": "",
+    # Optional PEM bundle trusted on top of the system store, for a Bindery
+    # behind a private CA or a self signed certificate. There is no setting
+    # that turns certificate checks off.
+    "ca_file": "",
+    "pull_interval_seconds": 60,
+    # Hard cap on one downloaded book.
+    "max_download_bytes": 1024 * 1024 * 1024,
+    # Calibre library id recorded when pull is turned on. Pull pauses while
+    # any other library is open, so books never land in the wrong one.
+    "pull_library_id": "",
 }
 
 prefs = JSONConfig("plugins/bindery_bridge")
@@ -31,6 +49,31 @@ for k, v in DEFAULTS.items():
 
 def load_config() -> dict:
     return {k: prefs.get(k, v) for k, v in DEFAULTS.items()}
+
+
+def save_value(key: str, value: object) -> None:
+    """Persist one setting outside the dialog (the pull library id)."""
+    prefs[key] = value
+
+
+def _pull_status_summary() -> str:
+    try:
+        from calibre_plugins.bindery_bridge.plugin import status
+
+        return str(status.pull_summary())
+    except Exception:
+        return "Pull from Bindery is off"
+
+
+def _notify_saved() -> None:
+    """Let a running plugin pick up the new settings without a restart."""
+    try:
+        from calibre_plugins.bindery_bridge.plugin import status
+
+        status.config_saved()
+    # Nothing is running yet, so there is nothing to tell.
+    except Exception:  # nosec B110
+        pass
 
 
 def _status_summary() -> str:
@@ -92,6 +135,28 @@ class ConfigWidget(QWidget):
 
         layout.addRow("API key:", key_row)
 
+        # Pull mode. The API key above authenticates both directions.
+        layout.addRow(QLabel("<b>Pull from Bindery</b>", self))
+        self.pull_enabled_input = QCheckBox("Fetch books from Bindery (pull mode)", self)
+        self.pull_enabled_input.setChecked(
+            bool(prefs.get("pull_enabled", DEFAULTS["pull_enabled"]))
+        )
+        layout.addRow("Pull mode:", self.pull_enabled_input)
+
+        self.bindery_url_input = QLineEdit(
+            str(prefs.get("bindery_url", DEFAULTS["bindery_url"])), self
+        )
+        self.bindery_url_input.setPlaceholderText("https://bindery.example.net")
+        layout.addRow("Bindery URL:", self.bindery_url_input)
+
+        self.ca_file_input = QLineEdit(str(prefs.get("ca_file", DEFAULTS["ca_file"])), self)
+        self.ca_file_input.setPlaceholderText("Optional PEM file for a private CA")
+        layout.addRow("CA file:", self.ca_file_input)
+
+        self.pull_status_label = QLabel(_pull_status_summary(), self)
+        self.pull_status_label.setWordWrap(True)
+        layout.addRow("Pull status:", self.pull_status_label)
+
     def _toggle_visibility(self, checked: bool) -> None:
         if checked:
             self.api_key_input.setEchoMode(QLineEdit.EchoMode.Normal)
@@ -109,3 +174,12 @@ class ConfigWidget(QWidget):
         prefs["bind_host"] = self.bind_host_input.text().strip() or DEFAULTS["bind_host"]
         prefs["ingest_root"] = self.ingest_root_input.text().strip()
         prefs["api_key"] = self.api_key_input.text().strip()
+        pull_enabled = bool(self.pull_enabled_input.isChecked())
+        if pull_enabled and not bool(prefs.get("pull_enabled", False)):
+            # Turned on just now: forget any earlier library so the plugin
+            # binds pull to the library that is open at this moment.
+            prefs["pull_library_id"] = ""
+        prefs["pull_enabled"] = pull_enabled
+        prefs["bindery_url"] = self.bindery_url_input.text().strip()
+        prefs["ca_file"] = self.ca_file_input.text().strip()
+        _notify_saved()

@@ -27,6 +27,21 @@ def _gui_thread_dispatcher(fn: Callable[[int], None]) -> Callable[[int], None] |
     return Dispatcher(fn)  # type: ignore[no-any-return]
 
 
+def _make_client(cfg: dict) -> Any:
+    """Build the Bindery client for one pull pass from the current settings."""
+    from calibre_plugins.bindery_bridge.plugin.bindery_client import BinderyClient
+    from calibre_plugins.bindery_bridge.plugin.handlers import CAPABILITIES, PLUGIN_VERSION
+
+    return BinderyClient(
+        base_url=str(cfg.get("bindery_url") or ""),
+        api_key=str(cfg.get("api_key") or ""),
+        version=PLUGIN_VERSION,
+        capabilities=CAPABILITIES,
+        ca_file=str(cfg.get("ca_file") or ""),
+        max_download_bytes=int(cfg.get("max_download_bytes") or 1024 * 1024 * 1024),
+    )
+
+
 class BinderyBridgeAction(InterfaceAction):
     name = "Bindery Bridge"
     action_spec = ("Bindery Bridge", None, "Configure the Bindery Bridge HTTP API", None)
@@ -51,6 +66,12 @@ class BinderyBridgeAction(InterfaceAction):
         self._on_updated = _gui_thread_dispatcher(self._refresh_gui_row)
         self.qaction.triggered.connect(self.show_dialog)
         self._start_server()
+        self._puller: Any = None
+        self._start_puller()
+        # A save from Preferences, Plugins goes through ConfigWidget.commit
+        # without show_dialog, so the dialog reports it here as well.
+        with contextlib.suppress(Exception):
+            status.on_config_saved(self._restart_puller)
 
     def _get_gui(self) -> Any:
         return self.gui
@@ -132,6 +153,60 @@ class BinderyBridgeAction(InterfaceAction):
                 self._server = None
         self._start_server()
 
+    def _start_puller(self) -> None:
+        """Start pull mode when it is turned on. Never fails genesis."""
+        try:
+            cfg = self._load_config()
+            if not cfg.get("pull_enabled"):
+                with contextlib.suppress(Exception):
+                    self._status.set_pull(enabled=False)
+                return
+            from calibre_plugins.bindery_bridge.plugin import config as config_mod
+            from calibre_plugins.bindery_bridge.plugin import puller
+
+            self._record_pull_library(cfg, config_mod, puller)
+            worker = puller.PullWorker(
+                get_db=self._get_db,
+                on_added=self._on_added,
+                on_updated=self._on_updated,
+                load_config=self._load_config,
+                client_factory=_make_client,
+            )
+            worker.start()
+            self._puller = worker
+            _log.info("calibre-bridge pull mode started for %s", cfg.get("bindery_url"))
+        except Exception as exc:
+            _log.error("calibre-bridge pull mode failed to start: %s", exc)
+            with contextlib.suppress(Exception):
+                self._status.set_pull(enabled=True, detail=f"Failed to start: {exc}")
+
+    def _record_pull_library(self, cfg: dict, config_mod: Any, puller: Any) -> None:
+        """Bind pull to the library open when it was turned on.
+
+        Runs on the GUI thread (genesis, or a dialog save), where reading
+        ``current_db`` is safe.
+        """
+        if cfg.get("pull_library_id"):
+            return
+        db = self._get_db()
+        lib_id = puller.library_id(db) if db is not None else ""
+        if lib_id:
+            config_mod.save_value("pull_library_id", lib_id)
+
+    def _stop_puller(self) -> None:
+        worker = getattr(self, "_puller", None)
+        self._puller = None
+        if worker is not None:
+            with contextlib.suppress(Exception):
+                worker.stop()
+
+    def _restart_puller(self) -> None:
+        self._stop_puller()
+        self._start_puller()
+        worker = getattr(self, "_puller", None)
+        if worker is not None:
+            worker.wake()
+
     def _get_db(self) -> Any | None:
         try:
             return self.gui.current_db
@@ -139,10 +214,17 @@ class BinderyBridgeAction(InterfaceAction):
             return None
 
     def library_changed(self, db: Any) -> None:
-        pass
+        # _get_db reads gui.current_db live, so the push server needs nothing.
+        # The pull worker checks the library id on every pass; waking it means
+        # a switch back to the pull library resumes at once.
+        worker = getattr(self, "_puller", None)
+        if worker is not None:
+            with contextlib.suppress(Exception):
+                worker.wake()
 
     def shutting_down(self) -> bool:
         _log.info("calibre-bridge shutting down")
+        self._stop_puller()
         if self._server is not None:
             with contextlib.suppress(Exception):
                 self._server.stop()
@@ -164,5 +246,7 @@ class BinderyBridgeAction(InterfaceAction):
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
         if dlg.exec_() == QDialog.DialogCode.Accepted:
+            # commit() also restarts the pull worker, through the listener
+            # genesis registered with the status module.
             widget.commit()
             self._restart_server()

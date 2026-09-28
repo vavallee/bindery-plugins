@@ -40,3 +40,64 @@ def summary() -> str:
     if state["detail"]:
         return f"Not running: {state['detail']}"
     return "Not running"
+
+
+# -- pull mode (0.8.0) ---------------------------------------------------------
+#
+# Kept apart from the server state above: the push server and the pull worker
+# run side by side and either can fail without the other.
+
+_pull: dict = {
+    "enabled": False,
+    "state": "",
+    "detail": "",
+    "warning": "",
+    "last_run": 0.0,
+    "last_error": "",
+    "delivered": 0,
+}
+
+# Called after the config dialog saves, so a change made from Preferences,
+# Plugins takes effect without a restart. The action registers it in genesis.
+_config_listeners: list = []
+
+
+def set_pull(**fields: object) -> None:
+    _pull.update(fields)
+
+
+def add_pull_delivered(count: int) -> None:
+    _pull["delivered"] = int(_pull.get("delivered") or 0) + int(count)
+
+
+def pull_current() -> dict:
+    return dict(_pull)
+
+
+def pull_summary() -> str:
+    """One line about pull mode for the config dialog."""
+    state = pull_current()
+    if not state["enabled"]:
+        return "Pull from Bindery is off"
+    parts = [str(state["detail"] or state["state"] or "Starting")]
+    if state["delivered"]:
+        parts.append(f"{state['delivered']} books delivered since Calibre started")
+    if state["last_error"]:
+        parts.append(f"Last error: {state['last_error']}")
+    if state["warning"]:
+        parts.append(str(state["warning"]))
+    return ". ".join(p.rstrip(".") for p in parts) + "."
+
+
+def on_config_saved(listener: object) -> None:
+    if listener not in _config_listeners:
+        _config_listeners.append(listener)
+
+
+def config_saved() -> None:
+    for listener in list(_config_listeners):
+        try:
+            listener()  # type: ignore[operator]
+        # A listener must not break the dialog that saved.
+        except Exception:  # nosec B112
+            continue

@@ -9,7 +9,7 @@ codebase.
 
 | Name             | Target       | Path                        | Status  |
 |------------------|--------------|-----------------------------|---------|
-| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.7.0  |
+| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.8.0  |
 
 ### What Bindery Bridge exposes
 
@@ -22,6 +22,11 @@ Calibre library without shelling out to `calibredb`.
 | `GET /v1/paths` | Whether Calibre can see a path, for diagnosing a container mount before importing anything |
 | `POST /v1/books` | Add a book, with metadata and a cover, or add another format to a book Bindery already pushed |
 | `PATCH /v1/books/{id}` | Fill in metadata on a book that is already there |
+
+Since 0.8.0 the plugin can also work the other way round: in pull mode it
+connects out to Bindery, downloads each queued book and adds it, so a desktop
+Calibre needs no shared drive, no inbound port and no fixed address. See
+[Tier 1C](docs/installation.md#tier-1c-desktop-calibre-with-pull-mode).
 
 Every error carries a machine readable `code` alongside its message, and
 `GET /v1/health` advertises which of the above a given plugin version
@@ -78,7 +83,8 @@ before installing, and refuses to proceed if it fails.
 3. Restart Calibre, then open **Preferences, Plugins, User plugins, Bindery
    Bridge, Customize** and set the listen port, bind host, and API key.
 4. Point Bindery at it: **Settings, Calibre, mode `plugin`**, URL
-   `http://<calibre-host>:<port>`.
+   `http://<calibre-host>:<port>`. If Bindery cannot reach this machine, use
+   pull mode instead ([Tier 1C](docs/installation.md#tier-1c-desktop-calibre-with-pull-mode)).
 
 ### Kubernetes or containerised Calibre
 

@@ -7,6 +7,40 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.8.0] - 2026-09-27
+
+#### Added
+
+- **Pull mode: Calibre fetches books from Bindery.** Until now Bindery called
+  the plugin with a file path, so a desktop Calibre needed the library on a
+  shared drive, a path remap, an open inbound port and a fixed address. With
+  **Pull from Bindery** turned on, the plugin connects out to Bindery's new
+  `/bridge/v1` routes, lists the deliveries waiting for it, downloads each
+  file into a private temp directory, adds it through the same code as a
+  push, and acknowledges
+  ([bindery#2833](https://github.com/vavallee/bindery/issues/2833)).
+  Off by default, and the push server keeps working unchanged. Advertised as
+  the `pull` capability.
+  - New settings: Bindery URL, an optional CA file, and a Pull status line
+    showing the last result, the last error and how many books arrived. The
+    existing API key authenticates both directions.
+  - HTTPS is always verified, against the system store plus the optional CA
+    file; there is no way to turn that off. Plain http works but the status
+    line warns when the host is not this machine. Redirects are refused so
+    the key cannot be forwarded elsewhere.
+  - Downloads are capped at 1 GiB, checked on the header and while reading.
+    The file name is always `book.<format>`, never one Bindery sends, and a
+    `coverPath` in the delivery is ignored. The temp directory is removed
+    after every delivery, success or not.
+  - Pull is tied to the library that was open when it was turned on, and
+    pauses while any other library is open, including a switch in the middle
+    of a batch.
+  - A lost ack is safe: the delivery comes back on the next pass, the dedupe
+    finds the book, and it is acknowledged as `already` without a second row.
+  - Checks every minute, backs off to 15 minutes while Bindery is
+    unreachable, an hour after a rejected key, and honours `Retry-After`.
+    Saving the settings or switching library triggers a pass at once.
+
 ### [0.7.0] - 2026-09-27
 
 #### Added

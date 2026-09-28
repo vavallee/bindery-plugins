@@ -24,7 +24,7 @@ def _make_qt_stubs():
 
     qt_core.QWidget = _QWidget
 
-    for name in ("QFormLayout", "QHBoxLayout", "QLabel", "QSpinBox"):
+    for name in ("QCheckBox", "QFormLayout", "QHBoxLayout", "QLabel", "QSpinBox"):
         cls = MagicMock(name=name)
         setattr(qt_core, name, cls)
 
@@ -347,18 +347,26 @@ def test_config_widget_builds_every_row():
         widget = config.ConfigWidget()
         layout = config.QFormLayout.return_value
         labels = [call.args[0] for call in layout.addRow.call_args_list]
+        heading = config.QLabel.return_value
         assert labels == [
             "Status:",
             "Listen port:",
             "Bind host:",
             "Ingest root:",
             "API key:",
+            heading,
+            "Pull mode:",
+            "Bindery URL:",
+            "CA file:",
+            "Pull status:",
         ]
         widget.port_input.setRange.assert_called_with(1, 65535)
         widget.port_input.setValue.assert_called_with(8123)
         widget.status_label.setWordWrap.assert_called_with(True)
-        widget.ingest_root_input.setPlaceholderText.assert_called_with(
-            "Leave empty to allow any path"
+        # Every QLineEdit is the same mock here, so check the calls were made.
+        widget.ingest_root_input.setPlaceholderText.assert_any_call("Leave empty to allow any path")
+        widget.ca_file_input.setPlaceholderText.assert_any_call(
+            "Optional PEM file for a private CA"
         )
         widget.api_key_input.setEchoMode.assert_called_with(config.QLineEdit.EchoMode.Password)
         assert widget._show_btn.setCheckable.call_args.args == (True,)

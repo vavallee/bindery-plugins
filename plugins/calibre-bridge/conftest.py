@@ -57,6 +57,7 @@ for _cls in (
     "QLineEdit",
     "QPushButton",
     "QSpinBox",
+    "QCheckBox",
     "QWidget",
 ):
     setattr(qt_core, _cls, object)
