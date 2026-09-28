@@ -95,6 +95,27 @@ class AddResult(NamedTuple):
     # None when the request carried no coverPath at all, so the handler can
     # leave the response shape exactly as 0.5.0 emitted it for old clients.
     cover_applied: bool | None
+    # True when the file went onto a row that was already there (a row this
+    # bridge made for the same Bindery book) instead of into a new row.
+    format_added: bool = False
+
+
+# Names for the rungs of the dedupe ladder in _match_existing_book. Only a
+# match on RUNG_BINDERY may have a format attached to it.
+RUNG_BINDERY = "bindery"
+RUNG_IDENTICAL = "title_authors"
+
+
+class LadderMatch(NamedTuple):
+    """Which existing row the dedupe ladder matched, and on which rung.
+
+    ``book_id`` is 0 and ``rung`` is ``""`` when nothing matched. Otherwise
+    ``rung`` is :data:`RUNG_BINDERY`, one of :data:`DEDUPE_IDENTIFIERS`, or
+    :data:`RUNG_IDENTICAL` for a ``find_identical_books`` match.
+    """
+
+    book_id: int
+    rung: str
 
 
 def add_book(
@@ -104,6 +125,7 @@ def add_book(
     metadata: dict[str, Any] | None = None,
     ingest_root: str = "",
     on_added: Callable[[int], Any] | None = None,
+    add_format: bool = False,
 ) -> tuple[int, bool]:
     """Add a book to the Calibre library. Returns ``(book_id, duplicate)``.
 
@@ -111,7 +133,13 @@ def add_book(
     :func:`add_book_detailed` for the cover outcome as well.
     """
     result = add_book_detailed(
-        db, path, gui=gui, metadata=metadata, ingest_root=ingest_root, on_added=on_added
+        db,
+        path,
+        gui=gui,
+        metadata=metadata,
+        ingest_root=ingest_root,
+        on_added=on_added,
+        add_format=add_format,
     )
     return result.book_id, result.duplicate
 
@@ -123,6 +151,7 @@ def add_book_detailed(
     metadata: dict[str, Any] | None = None,
     ingest_root: str = "",
     on_added: Callable[[int], Any] | None = None,
+    add_format: bool = False,
 ) -> AddResult:
     """Add a book to the Calibre library.
 
@@ -149,6 +178,12 @@ def add_book_detailed(
     :class:`SourceUnreadable`; a failure while Calibre copies it into the
     library raises :class:`CopyFailed`. A missing file still raises
     ``FileNotFoundError``.
+
+    ``add_format`` lets a second file of the same Bindery book (a PDF after
+    an EPUB) join the row the first one made instead of coming back as a
+    duplicate. See :func:`_attach_to_bindery_row` for exactly when that
+    happens. A formatless row left by a failed add is filled in whether or not
+    ``add_format`` is set, as it has been since 0.6.2.
     """
     requested_path = path
     _check_ingest_path(path, ingest_root)
@@ -171,23 +206,24 @@ def add_book_detailed(
     )
     bindery_id = identifiers.get("bindery")
     if bindery_id:
-        existing = _existing_book_id(api, identifiers, mi)
-        if existing:
-            if _is_empty_bindery_row(api, existing, bindery_id):
-                # A row this bridge created for the same Bindery book, left
-                # without a file by an add that failed after the row was
-                # written. Reporting it as a duplicate would leave it empty
-                # for good, so attach the file instead.
-                try:
-                    api.add_format(existing, fmt, path, run_hooks=False)
-                except FileNotFoundError:
-                    raise
-                except OSError as exc:
-                    raise _copy_failed(requested_path, exc) from exc
-                _log.info("attached %s to book %d, which an earlier add left empty", fmt, existing)
-                _schedule_gui_refresh(gui, 1, on_added)
-                return AddResult(existing, False, None)
-            return AddResult(existing, True, None)
+        match = _match_existing_book(api, identifiers, mi)
+        if match.book_id:
+            if match.rung == RUNG_BINDERY:
+                attached = _attach_to_bindery_row(
+                    api,
+                    match.book_id,
+                    bindery_id,
+                    fmt,
+                    path,
+                    requested_path,
+                    metadata,
+                    ingest_root,
+                    add_format,
+                )
+                if attached is not None:
+                    _schedule_gui_refresh(gui, 1, on_added)
+                    return attached
+            return AddResult(match.book_id, True, None)
 
     cover_applied = _apply_cover(mi, metadata, ingest_root)
 
@@ -235,6 +271,111 @@ def add_book_detailed(
     if identical:
         return AddResult(int(next(iter(identical))), True, None)
     return AddResult(0, True, None)
+
+
+def _attach_to_bindery_row(
+    api: Any,
+    book_id: int,
+    bindery_id: str,
+    fmt: str,
+    path: str,
+    requested_path: str,
+    metadata: dict[str, Any] | None,
+    ingest_root: str,
+    add_format: bool,
+) -> AddResult | None:
+    """Put this file on a row the ladder matched on the ``bindery`` rung.
+
+    Returns None when the push is a plain duplicate and the caller should
+    answer 409. The rule, which the caller has already narrowed to a
+    ``bindery`` identifier match:
+
+    * The row has no format at all. It is a row this bridge created for the
+      same Bindery book and an add that failed after the row was written left
+      it empty (0.6.2). Reporting it as a duplicate would leave it empty for
+      good, so the file goes on whether or not ``add_format`` was sent.
+    * The row has formats, ``add_format`` was sent, and none of them is this
+      one. A second file of the same Bindery book, so it joins the row.
+    * Anything else is a duplicate, including the same format a second time.
+
+    A match on any other rung never reaches here. An ISBN or a title match can
+    be a book the user curated by hand, and a file is never added to that.
+
+    After the file goes on, the row gets the fill only metadata update that
+    ``PATCH /v1/books/{id}`` applies, so it picks up anything Bindery knows
+    that the row is missing and loses nothing the user set. A row that was
+    empty also gets ``coverPath``, since the add that made it never finished;
+    a row that already had a file keeps its cover.
+    """
+    formats = _row_formats(api, book_id)
+    if formats is None:
+        return None
+    if formats:
+        if not add_format or fmt in formats:
+            return None
+    elif not _is_empty_bindery_row(api, book_id, bindery_id):
+        return None
+    try:
+        added = api.add_format(book_id, fmt, path, replace=False, run_hooks=False)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise _copy_failed(requested_path, exc) from exc
+    if added is False:
+        # Calibre returns False when replace=False meets a format that is
+        # already there, which means another push got in first.
+        return None
+    if formats:
+        _log.info("added %s to book %d, which already had %s", fmt, book_id, ",".join(formats))
+    else:
+        _log.info("attached %s to book %d, which an earlier add left empty", fmt, book_id)
+    if isinstance(metadata, dict):
+        _fill_existing_row(api, book_id, metadata)
+    cover_applied = None if formats else _set_row_cover(api, book_id, metadata, ingest_root)
+    return AddResult(book_id, False, cover_applied, True)
+
+
+def _row_formats(api: Any, book_id: int) -> set[str] | None:
+    """The formats a row carries, upper case, or None if they cannot be read."""
+    try:
+        return {str(f).upper() for f in (api.formats(book_id) or ())}
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("could not read the formats of book %d: %s", book_id, exc)
+        return None
+
+
+def _fill_existing_row(api: Any, book_id: int, metadata: dict[str, Any]) -> list[str]:
+    """Apply the fill only metadata rule to ``book_id``. Never fails the add.
+
+    The file is already in the library by the time this runs, so a metadata
+    problem is logged rather than turned into an error for a book that did
+    arrive.
+    """
+    try:
+        mi = api.get_metadata(book_id)
+        applied = _fill_empty_fields(mi, metadata)
+        if applied:
+            api.set_metadata(book_id, mi)
+            _log.info("filled book %d: %s", book_id, ",".join(applied))
+        return applied
+    except Exception as exc:
+        _log.warning("could not fill the metadata of book %d: %s", book_id, exc)
+        return []
+
+
+def _set_row_cover(
+    api: Any, book_id: int, metadata: dict[str, Any] | None, ingest_root: str
+) -> bool | None:
+    """Set ``metadata.coverPath`` on an existing row, with the add's own checks."""
+    cover = _load_cover(metadata, ingest_root)
+    if cover.data is None:
+        return cover.applied
+    try:
+        api.set_cover({book_id: cover.data[1]})
+    except Exception as exc:
+        _log.warning("could not set the cover of book %d: %s", book_id, exc)
+        return False
+    return True
 
 
 def _copy_failed(path: str, exc: OSError) -> CopyFailed:
@@ -412,6 +553,11 @@ def _remove_empty_bindery_row(api: Any, bindery_id: str) -> None:
 
 
 def _existing_book_id(api: Any, identifiers: dict[str, str], mi: Any) -> int:
+    """The id half of :func:`_match_existing_book`, 0 when nothing matched."""
+    return _match_existing_book(api, identifiers, mi).book_id
+
+
+def _match_existing_book(api: Any, identifiers: dict[str, str], mi: Any) -> LadderMatch:
     """Find a book already in the library that this push would duplicate.
 
     The ladder, strongest evidence first:
@@ -423,13 +569,14 @@ def _existing_book_id(api: Any, identifiers: dict[str, str], mi: Any) -> int:
        where no ``bindery`` identifier exists anywhere.
     3. ``find_identical_books``, for a library with no identifiers at all.
 
-    Returns 0 when nothing matches, which means the caller goes on to add.
+    Returns the matched id and the rung that matched it, or ``(0, "")`` when
+    nothing matches, which means the caller goes on to add.
     """
     bindery_id = identifiers.get("bindery")
     if bindery_id:
         existing = _book_id_for_identifier(api, "bindery", bindery_id)
         if existing:
-            return existing
+            return LadderMatch(existing, RUNG_BINDERY)
 
     for typ in DEDUPE_IDENTIFIERS:
         value = identifiers.get(typ)
@@ -438,14 +585,14 @@ def _existing_book_id(api: Any, identifiers: dict[str, str], mi: Any) -> int:
         existing = _book_id_for_identifier(api, typ, value)
         if existing:
             _log.info("dedupe: matched existing book %d on %s identifier", existing, typ)
-            return existing
+            return LadderMatch(existing, typ)
 
     identical = _safe_find_identical_books(api, mi)
     if identical:
         existing = min(int(book_id) for book_id in identical)
         _log.info("dedupe: matched existing book %d on title and authors", existing)
-        return existing
-    return 0
+        return LadderMatch(existing, RUNG_IDENTICAL)
+    return LadderMatch(0, "")
 
 
 def _safe_find_identical_books(api: Any, mi: Any) -> set:
@@ -469,16 +616,35 @@ def _apply_cover(mi: Any, metadata: dict[str, Any] | None, ingest_root: str) -> 
     and is no more trustworthy than any other field, and the bytes end up
     readable through Calibre's content server.
     """
+    cover = _load_cover(metadata, ingest_root)
+    if cover.data is None:
+        return cover.applied
+    mi.cover_data = cover.data
+    # Calibre's set_metadata falls back to reading mi.cover from disk when
+    # cover_data is unset, so setting both covers either code path.
+    mi.cover = cover.path
+    return True
+
+
+class _Cover(NamedTuple):
+    # None: no coverPath sent. False: sent but unusable. True: ``data`` is set.
+    applied: bool | None
+    data: tuple[str, bytes] | None = None
+    path: str = ""
+
+
+def _load_cover(metadata: dict[str, Any] | None, ingest_root: str) -> _Cover:
+    """Read ``metadata.coverPath`` off disk with every check the add applies."""
     if not isinstance(metadata, dict):
-        return None
+        return _Cover(None)
     cover_path = _clean_str(metadata.get("coverPath"))
     if not cover_path:
-        return None
+        return _Cover(None)
     try:
         _check_ingest_path(cover_path, ingest_root)
     except ValueError as exc:
         _log.warning("cover rejected: %s", exc)
-        return False
+        return _Cover(False)
     cover_path = _calibre_safe_path(cover_path)
     try:
         size = os.path.getsize(cover_path)
@@ -489,20 +655,16 @@ def _apply_cover(mi: Any, metadata: dict[str, Any] | None, ingest_root: str) -> 
                 MAX_COVER_BYTES,
                 cover_path,
             )
-            return False
+            return _Cover(False)
         with open(cover_path, "rb") as f:
             data = f.read()
     except OSError as exc:
         _log.warning("cover could not be read, adding the book without it: %s", exc)
-        return False
+        return _Cover(False)
     if not data:
         _log.warning("cover file is empty, adding the book without it: %r", cover_path)
-        return False
-    mi.cover_data = (_cover_format(cover_path), data)
-    # Calibre's set_metadata falls back to reading mi.cover from disk when
-    # cover_data is unset, so setting both covers either code path.
-    mi.cover = cover_path
-    return True
+        return _Cover(False)
+    return _Cover(True, (_cover_format(cover_path), data), cover_path)
 
 
 def _cover_format(path: str) -> str:

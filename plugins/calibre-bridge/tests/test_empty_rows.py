@@ -9,6 +9,7 @@ library: 15 formatless rows after one Push all.
 
 import pytest
 
+from .conftest import StubMetadata
 from .test_dedupe_ladder import FakeDB, FakeLibrary, FakeMetadata, _book
 
 
@@ -24,6 +25,9 @@ class FormatLibrary(FakeLibrary):
         super().__init__()
         self.formats_by_book = {}
         self.add_format_calls = []
+        self.add_format_kwargs = []
+        self.set_metadata_calls = []
+        self.set_cover_calls = []
         self.removed = []
         self.fail_copy = False
 
@@ -44,10 +48,42 @@ class FormatLibrary(FakeLibrary):
         assert name == "identifiers"
         return dict(self.rows[book_id]["identifiers"])
 
-    def add_format(self, book_id, fmt, path, run_hooks=True):
+    def add_format(self, book_id, fmt, path, replace=True, run_hooks=True):
+        """Calibre's Cache.add_format: False when replace=False meets an existing format."""
         self.add_format_calls.append((book_id, fmt, path))
-        self.formats_by_book.setdefault(book_id, set()).add(fmt)
+        self.add_format_kwargs.append({"replace": replace, "run_hooks": run_hooks})
+        have = self.formats_by_book.setdefault(book_id, set())
+        if fmt in have and not replace:
+            return False
+        have.add(fmt)
         return True
+
+    def get_metadata(self, book_id, **kwargs):
+        row = self.rows[book_id]
+        mi = StubMetadata()
+        mi.title = row["title"]
+        mi.authors = list(row["authors"])
+        mi.set_identifiers(row["identifiers"])
+        for key, value in row.get("fields", {}).items():
+            setattr(mi, key, value)
+        return mi
+
+    def set_metadata(self, book_id, mi, **kwargs):
+        self.set_metadata_calls.append((book_id, mi))
+        row = self.rows[book_id]
+        row["title"] = mi.title
+        row["authors"] = list(mi.authors)
+        row["identifiers"] = mi.get_identifiers()
+        row["fields"] = {
+            "comments": mi.comments,
+            "publisher": mi.publisher,
+            "series": mi.series,
+            "series_index": mi.series_index,
+            "tags": list(mi.tags),
+        }
+
+    def set_cover(self, book_id_data_map):
+        self.set_cover_calls.append(dict(book_id_data_map))
 
     def remove_books(self, book_ids):
         for book_id in book_ids:

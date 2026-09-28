@@ -88,7 +88,7 @@ def test_health_advertises_0_6_capabilities(bridge_handlers, serve_bridge):
     status, payload, _ = bridge.call("GET", "/v1/health")
     assert status == 200
     assert EXPECTED_CAPABILITIES.issubset(set(payload["capabilities"]))
-    assert payload["plugin_version"] == "0.6.3"
+    assert payload["plugin_version"] == "0.7.0"
 
 
 # ── error codes ───────────────────────────────────────────────────────────────

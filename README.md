@@ -9,7 +9,7 @@ codebase.
 
 | Name             | Target       | Path                        | Status  |
 |------------------|--------------|-----------------------------|---------|
-| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.6.3  |
+| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.7.0  |
 
 ### What Bindery Bridge exposes
 
@@ -20,7 +20,7 @@ Calibre library without shelling out to `calibredb`.
 |---|---|
 | `GET /v1/health` | Version and the capability list, plus the active library path when the bearer token is sent |
 | `GET /v1/paths` | Whether Calibre can see a path, for diagnosing a container mount before importing anything |
-| `POST /v1/books` | Add a book, with metadata and a cover |
+| `POST /v1/books` | Add a book, with metadata and a cover, or add another format to a book Bindery already pushed |
 | `PATCH /v1/books/{id}` | Fill in metadata on a book that is already there |
 
 Every error carries a machine readable `code` alongside its message, and

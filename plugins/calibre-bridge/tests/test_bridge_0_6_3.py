@@ -86,7 +86,7 @@ def test_a_failed_attach_to_an_empty_row_raises_copy_failed(adder, tmp_path):
     lib = FormatLibrary()
     ghost = lib.seed("Eight Stories", ["Isaac Asimov"], {"bindery": "42"})
 
-    def broken_add_format(book_id, fmt, path, run_hooks=True):
+    def broken_add_format(book_id, fmt, path, replace=True, run_hooks=True):
         raise PermissionError(13, "Permission denied")
 
     lib.add_format = broken_add_format
@@ -292,7 +292,7 @@ def test_health_hides_the_library_without_a_token(bridge_handlers, serve_bridge)
     status, payload, _ = bridge.call("GET", "/v1/health")
     assert status == 200
     assert payload["library"] == ""
-    assert payload["plugin_version"] == "0.6.3"
+    assert payload["plugin_version"] == "0.7.0"
     assert "error_codes" in payload["capabilities"]
 
 

@@ -4,7 +4,7 @@ The Bindery Bridge Calibre plugin exposes a small HTTP API that Bindery uses to
 add and update books in the running Calibre library without shelling out to
 `calibredb`. All endpoints are prefixed with `/v1/`.
 
-This document describes what the plugin actually implements at 0.6.3. Anything
+This document describes what the plugin actually implements at 0.7.0. Anything
 the code does not do is not in here.
 
 ## Versioning
@@ -108,10 +108,12 @@ Liveness, version and capability probe. Unauthenticated.
 
 ```json
 {
-  "plugin_version": "0.6.3",
+  "plugin_version": "0.7.0",
   "calibre_version": "9.7.0",
   "library": "/media/BOOKS",
-  "capabilities": ["book_metadata", "cover", "path_probe", "metadata_update", "error_codes"]
+  "capabilities": [
+    "book_metadata", "cover", "path_probe", "metadata_update", "error_codes", "add_format"
+  ]
 }
 ```
 
@@ -126,6 +128,7 @@ token (see [Authentication](#authentication)).
 | `path_probe` | `GET /v1/paths` exists |
 | `metadata_update` | `PATCH /v1/books/{id}` exists |
 | `error_codes` | Every error response carries a `code` |
+| `add_format` | `POST /v1/books` accepts `addFormat` and can answer `format_added`. Since 0.7.0 |
 
 A client SHOULD probe capabilities once and cache them, but SHOULD expire that
 cache: upgrading the plugin under a running Bindery otherwise leaves the client
@@ -203,6 +206,7 @@ Add a book already present on a filesystem path visible to the Calibre process.
 |---|---|---|---|
 | `path` | string | yes | Absolute path on the Calibre process filesystem |
 | `metadata` | object | no | Applied to the book before it is added |
+| `addFormat` | boolean | no | Let this file join the row an earlier push of the same Bindery book made. Requires the `add_format` capability. See [Adding a format](#adding-a-format-to-an-existing-row) |
 
 `metadata` is supported when `capabilities` includes `book_metadata`. Older
 plugins ignore unknown request fields, so a client that requires metadata
@@ -281,6 +285,15 @@ reported as `500` with `copy_failed`.
   {"id": 1234, "duplicate": false, "cover_applied": true}
   ```
 
+  or, when the file went onto a row that was already there (see
+  [Adding a format](#adding-a-format-to-an-existing-row)):
+
+  ```json
+  {"id": 1234, "duplicate": false, "format_added": true}
+  ```
+
+  `format_added` is only ever `true`, and absent on every other response.
+
 - `409 Conflict`, the book is already in the library. `id` is the existing
   book's Calibre id, so the client can record the linkage.
 
@@ -317,13 +330,9 @@ weaker evidence and stopping at the first hit:
    authors in mi and the same title (title is fuzzy matched)", so unlike
    `has_book` it does not confuse two books that merely share a title.
 
-Any hit returns `409` with the existing id, with one exception: when the hit is
-a row carrying the same `bindery` identifier and no format at all, the file is
-attached to that row and the response is `201` with its id and
-`"duplicate": false`. Such a row is what a failed add left behind before 0.6.2
-removed them, so attaching the file repairs it. An empty row matched on any
-other rung, such as a wishlist entry made by hand with an ISBN, is left alone
-and still returns `409`. Nothing matched means the book is added.
+Any hit returns `409` with the existing id, except for the cases in
+[Adding a format](#adding-a-format-to-an-existing-row) below, all of which need
+a hit on rung 1. Nothing matched means the book is added.
 
 Rungs 2 and 3 were added in 0.6.0. Before that the only rung was the first one,
 so the first "Push all to Calibre" against a library Bindery had not populated
@@ -331,6 +340,45 @@ cloned the whole library and reported it as success.
 
 A request without a `bindery` identifier is unchanged: it goes to Calibre with
 `add_duplicates=False` and Calibre decides.
+
+**Adding a format to an existing row**
+
+A Bindery book can have more than one file, an EPUB and a PDF say, and Bindery
+pushes each one separately with the same `bindery` identifier. Before 0.7.0 the
+second push hit rung 1 and came back `409`, so the second format never reached
+Calibre.
+
+The file is attached to the matched row, and the response is `201` with
+`"duplicate": false` and `"format_added": true`, when all of these hold:
+
+- the ladder matched on rung 1, the `bindery` identifier, and
+- either the row has no format at all, or the request sent `"addFormat": true`
+  and the row does not already have this file's format.
+
+Anything else that matched is `409` as before. In particular:
+
+- The same format a second time is `409`. The existing file is never replaced.
+- A match on rung 2 or 3 never gets a file, with or without `addFormat`. That
+  row may be one the user built or curated by hand, and the bridge cannot tell
+  which files belong on it.
+
+The row with no format is what a failed add left behind before 0.6.2 started
+removing them. It is repaired whether or not `addFormat` was sent, as it has
+been since 0.6.2, so an older client gets the same repair.
+
+After the file goes on, the row gets the same fill only update as
+[`PATCH /v1/books/{id}`](#patch-v1booksid): empty fields are filled from
+`metadata`, nothing the row already has is changed. A row that had no format
+also gets `coverPath`, since the add that made it never finished, and the
+response carries `cover_applied` as for a create. A row that already had a file
+keeps its cover and the response has no `cover_applied`. A metadata or cover
+problem at this point is logged and does not fail the request, since the file
+is already in the library.
+
+The file is added with Calibre's `add_format(..., replace=False)`. A failure
+while Calibre copies it is `500` with `copy_failed`, and the row is left as it
+was. If another push put the same format on the row in between, Calibre
+refuses the copy and the response is `409`.
 
 ### `PATCH /v1/books/{id}`
 
@@ -427,7 +475,7 @@ plugin's own configuration dialog.
   breaking for pre 0.6.0 clients, which have nothing else to read. Add a `code`
   and leave the string alone.
 
-### What an older Bindery sees on 0.6.3
+### What an older Bindery sees on 0.7.0
 
 | Client | Behaviour |
 |---|---|
@@ -436,3 +484,4 @@ plugin's own configuration dialog.
 | Any client | Gains the dedupe ladder, which turns what used to be a silent duplicate into a `409` with the existing id. A client that already treats `409` as "already there" needs no change |
 | Any client | Sees `path_unreadable` (400) and `copy_failed` (500) where 0.6.2 sent `internal` (500). A client branching on status alone sees an unreadable path move from 500 to 400 |
 | Any client without the token | Gets `library: ""` from health. Bindery sends its token on every request, health included |
+| Any client not sending `addFormat` | A second format of the same Bindery book is still `409`, as on 0.6.3. The repair of a formatless row still happens, and its `201` now also carries `format_added: true`, fills empty metadata and applies `coverPath` |

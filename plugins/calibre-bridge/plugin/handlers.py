@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-PLUGIN_VERSION = "0.6.3"
+PLUGIN_VERSION = "0.7.0"
 
 # Optional protocol features. A client that understands none of them still
 # works: everything 0.6.0 adds is a new endpoint, a new response field or a
@@ -18,6 +18,9 @@ CAPABILITIES = [
     "path_probe",
     "metadata_update",
     "error_codes",
+    # 0.7.0: ``addFormat`` on POST /v1/books puts a second file of the same
+    # Bindery book on the row the first one made, instead of a 409.
+    "add_format",
 ]
 
 # Machine readable error codes, sent alongside the human readable ``error``
@@ -284,6 +287,10 @@ def make_handler(
             if metadata is not None and not isinstance(metadata, dict):
                 self._send_error_json(400, CODE_INVALID_METADATA, "metadata must be an object")
                 return
+            add_format = payload.get("addFormat")
+            if add_format is not None and not isinstance(add_format, bool):
+                self._send_error_json(400, CODE_INVALID_METADATA, "addFormat must be a boolean")
+                return
             try:
                 gui = get_gui() if get_gui is not None else None
                 result = adder_mod.add_book_detailed(
@@ -293,6 +300,7 @@ def make_handler(
                     metadata=metadata,
                     ingest_root=ingest_root,
                     on_added=on_added,
+                    add_format=bool(add_format),
                 )
             except (FileNotFoundError, ValueError) as exc:
                 self._send_path_error(exc)
@@ -315,6 +323,10 @@ def make_handler(
             else:
                 _log.info("add_book success id=%d path=%r", coerced_id, path)
             body: dict[str, Any] = {"id": coerced_id, "duplicate": bool(result.duplicate)}
+            # Only present when the file went onto a row that was already
+            # there, so every other response keeps its 0.6 shape.
+            if result.format_added:
+                body["format_added"] = True
             # Only present when the request actually carried a coverPath, so a
             # 0.5.0 client keeps seeing the exact response shape it knows.
             if result.cover_applied is not None:

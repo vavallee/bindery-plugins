@@ -7,6 +7,33 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.7.0] - 2026-09-27
+
+#### Added
+
+- **A second file of the same book now reaches Calibre.** When a Bindery book
+  has an EPUB and a PDF, Bindery pushes each file on its own with the same
+  `bindery` identifier. The second push matched the first row on the dedupe
+  ladder and came back `409`, so the PDF never made it
+  ([bindery#2832](https://github.com/vavallee/bindery/issues/2832)).
+  `POST /v1/books` now takes an optional `addFormat: true`. With it, a file
+  whose push matches a row on the `bindery` identifier, and whose format that
+  row does not have yet, is added to that row. The response is `201` with
+  `format_added: true`, and the row also gets the fill only metadata update
+  that `PATCH /v1/books/{id}` does. The same format twice is still `409` and
+  the existing file is never replaced. A match on ISBN, ASIN, Google,
+  Hardcover or title and author never gets a file added, because that row may
+  be one the user curated. Advertised as the `add_format` capability. A client
+  that does not send `addFormat` sees no change.
+
+#### Changed
+
+- **The 0.6.2 repair of an empty row now finishes the job.** A push that
+  lands on a formatless row left by an earlier failed add still gets the file
+  attached, with or without `addFormat`. That row now also gets its empty
+  metadata filled and the `coverPath` cover, which it used to go without, and
+  the response carries `format_added: true`.
+
 ### [0.6.3] - 2026-09-27
 
 #### Fixed
