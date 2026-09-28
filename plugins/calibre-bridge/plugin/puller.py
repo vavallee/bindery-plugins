@@ -411,7 +411,9 @@ class PullWorker:
         elif exc.status == 409 and exc.code == "not_in_pull_mode":
             stats.status = "Bindery is set to push; switch Settings, Calibre, Transport to Pull"
             stats.next_delay = MODE_BACKOFF
-        elif exc.status == 404:
+        elif exc.status == 404 or exc.code == "not_json":
+            # A Bindery without the pull routes serves its web UI page for
+            # any unknown path, so this is usually a 200 that is not JSON.
             stats.status = "This Bindery has no pull routes; update Bindery or check the URL"
             stats.next_delay = MAX_BACKOFF
         elif exc.status == 429:

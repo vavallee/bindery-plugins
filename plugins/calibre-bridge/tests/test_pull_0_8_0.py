@@ -97,9 +97,16 @@ def make_fake_bindery(state):
             pass
 
         def _json(self, status, payload, headers=None):
-            body = json.dumps(payload).encode() if payload is not None else b""
+            if isinstance(payload, bytes):
+                # Raw bytes stand in for a non JSON page, such as the web UI
+                # an older Bindery serves for an unknown path.
+                body = payload
+            else:
+                body = json.dumps(payload).encode() if payload is not None else b""
             self.send_response(status)
-            if payload is not None:
+            if isinstance(payload, bytes):
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+            elif payload is not None:
                 self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             for k, v in (headers or {}).items():
@@ -555,6 +562,23 @@ def test_not_in_pull_mode_reports_the_setting(pull, bindery):
     stats = Harness(pull, bindery.url).run()
     assert stats.status == "Bindery is set to push; switch Settings, Calibre, Transport to Pull"
     assert stats.next_delay == 300
+
+
+def test_a_bindery_without_pull_routes_says_so(pull, bindery):
+    """An older Bindery, or a URL missing its URL base, serves the web UI page
+    with a 200 for /bridge/v1/hello rather than a 404."""
+    bindery.add("d1")
+    bindery.override("hello", 200, b"<!doctype html><html><body>Bindery</body></html>")
+    stats = Harness(pull, bindery.url).run()
+    assert stats.status == "This Bindery has no pull routes; update Bindery or check the URL"
+    assert stats.next_delay == 15 * 60
+    assert [p for _m, p, _h in bindery.requests] == ["/bridge/v1/hello"]
+
+
+def test_a_404_on_hello_says_no_pull_routes(pull, bindery):
+    bindery.override("hello", 404, {"error": "not found", "code": "not_found"})
+    stats = Harness(pull, bindery.url).run()
+    assert stats.status == "This Bindery has no pull routes; update Bindery or check the URL"
 
 
 def test_hello_saying_push_stops_before_listing(pull, bindery):

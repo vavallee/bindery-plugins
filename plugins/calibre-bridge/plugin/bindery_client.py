@@ -279,9 +279,15 @@ class BinderyClient:
         try:
             payload = json.loads(raw.decode("utf-8"))
         except ValueError as exc:
-            raise BinderyError(f"response from {path} is not JSON", status=200) from exc
+            # A Bindery without the pull routes, or a URL missing its URL base,
+            # answers with the web UI page and a 200, not a 404.
+            raise BinderyError(
+                f"response from {path} is not JSON", status=200, code="not_json"
+            ) from exc
         if not isinstance(payload, dict):
-            raise BinderyError(f"response from {path} is not a JSON object", status=200)
+            raise BinderyError(
+                f"response from {path} is not a JSON object", status=200, code="not_json"
+            )
         return payload
 
     def _post_json(self, path: str, body: dict[str, Any]) -> None:
