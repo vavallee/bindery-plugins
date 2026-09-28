@@ -1,4 +1,4 @@
-pluginVersion: "0.6.3"
+pluginVersion: "0.7.0"
 # pluginName must match the `name` attribute of the plugin class in
 # plugins/calibre-bridge/__init__.py. Calibre keys its plugin registry by that
 # name, so a mismatch here shows up as "plugin installed but never loaded".

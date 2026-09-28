@@ -9,7 +9,7 @@ spec:
         elements:
           - cluster: homelab
             namespace: default
-            pluginVersion: "0.6.3"
+            pluginVersion: "0.7.0"
   template:
     metadata:
       name: "calibre-plugin-installer-{{cluster}}"
