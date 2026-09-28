@@ -5,7 +5,7 @@ description: >-
   Bindery Bridge plugin .zip from GitHub Releases into Calibre's persistent
   plugins directory before startup.
 type: application
-version: 0.2.2
+version: 0.2.3
 appVersion: "0.2.0"
 keywords:
   - calibre
