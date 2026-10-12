@@ -94,7 +94,15 @@ def _status_summary() -> str:
 class ConfigWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # Size the dialog from the font, not from pixels, so it scales with the
+        # display (125% and up on a 4K monitor) and the fields have room.
+        self.setMinimumWidth(self.fontMetrics().horizontalAdvance("x") * 64)
         layout = QFormLayout(self)
+        # Set the growth policy ourselves. Left to the style, a form on Windows
+        # keeps every field at its size hint, so resizing the dialog moved the
+        # window edge and nothing inside it, and the word wrapped status lines
+        # were squeezed into a narrow column and clipped.
+        layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         # A persistent report of what the server is actually doing. The start
         # failure used to be a five second status bar toast and nothing else,

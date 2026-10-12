@@ -20,7 +20,15 @@ def _make_qt_stubs():
     # QWidget must be a real class so `class ConfigWidget(QWidget)` works
     class _QWidget:
         def __init__(self, parent=None):
-            pass
+            self.minimum_width = None
+
+        def fontMetrics(self):
+            metrics = MagicMock(name="fontMetrics")
+            metrics.horizontalAdvance.return_value = 7
+            return metrics
+
+        def setMinimumWidth(self, width):
+            self.minimum_width = width
 
     qt_core.QWidget = _QWidget
 
@@ -370,6 +378,28 @@ def test_config_widget_builds_every_row():
         )
         widget.api_key_input.setEchoMode.assert_called_with(config.QLineEdit.EchoMode.Password)
         assert widget._show_btn.setCheckable.call_args.args == (True,)
+    finally:
+        _cleanup(stubs)
+
+
+def test_config_widget_fields_grow_with_the_dialog():
+    """Left to the style, a Windows form keeps every field at its size hint.
+
+    Resizing the dialog then changed the window and nothing inside it, and the
+    word wrapped status lines were squeezed into a narrow column and clipped
+    (bindery-plugins#22). The growth policy has to be set explicitly, and the
+    minimum width has to come from the font so it scales with the display.
+    """
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        widget = config.ConfigWidget()
+        layout = config.QFormLayout.return_value
+        layout.setFieldGrowthPolicy.assert_called_once_with(
+            config.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        # 64 characters of the dialog font (the stub reports 7 pixels each).
+        assert widget.minimum_width == 7 * 64
     finally:
         _cleanup(stubs)
 
