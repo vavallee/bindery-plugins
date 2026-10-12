@@ -4,7 +4,7 @@ The Bindery Bridge Calibre plugin exposes a small HTTP API that Bindery uses to
 add and update books in the running Calibre library without shelling out to
 `calibredb`. All endpoints are prefixed with `/v1/`.
 
-This document describes what the plugin actually implements at 0.8.0. Anything
+This document describes what the plugin actually implements at 0.8.1. Anything
 the code does not do is not in here.
 
 ## Versioning
@@ -108,7 +108,7 @@ Liveness, version and capability probe. Unauthenticated.
 
 ```json
 {
-  "plugin_version": "0.8.0",
+  "plugin_version": "0.8.1",
   "calibre_version": "9.7.0",
   "library": "/media/BOOKS",
   "capabilities": [
@@ -487,7 +487,7 @@ request carries:
 | Header | Value |
 |---|---|
 | `Authorization` | `Bearer <api_key>`, the plugin's own `api_key`, which Bindery stores as `calibre.plugin_api_key`. The same key authenticates both directions |
-| `X-Bridge-Version` | The plugin version, e.g. `0.8.0` |
+| `X-Bridge-Version` | The plugin version, e.g. `0.8.1` |
 | `X-Bridge-Capabilities` | Comma separated, exactly the list `GET /v1/health` advertises |
 | `User-Agent` | `calibre-bridge/<version>` |
 

@@ -408,8 +408,8 @@ def test_every_request_carries_the_contract_headers(pull, bindery):
     assert bindery.requests
     for _method, _path, headers in bindery.requests:
         assert headers["Authorization"] == f"Bearer {API_KEY}"
-        assert headers["X-Bridge-Version"] == "0.8.0"
-        assert headers["User-Agent"] == "calibre-bridge/0.8.0"
+        assert headers["X-Bridge-Version"] == "0.8.1"
+        assert headers["User-Agent"] == "calibre-bridge/0.8.1"
         caps = headers["X-Bridge-Capabilities"].split(",")
         assert caps == pull.handlers.CAPABILITIES
         assert "pull" in caps
@@ -420,7 +420,7 @@ def test_health_advertises_pull(bridge_handlers, serve_bridge):
     status, payload, _ = bridge.call("GET", "/v1/health")
     assert status == 200
     assert "pull" in payload["capabilities"]
-    assert payload["plugin_version"] == "0.8.0"
+    assert payload["plugin_version"] == "0.8.1"
 
 
 def test_pages_through_every_delivery(pull, bindery):
