@@ -7,6 +7,21 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.8.1] - 2026-10-12
+
+#### Fixed
+
+- **The settings window now fills its dialog on high DPI displays.** On a 4K
+  monitor at 125% scaling the Customize Bindery Bridge window kept every field
+  at its default size: resizing the window moved the edge and nothing inside
+  it, and the Status and Pull status lines were squeezed into a narrow column
+  and clipped to one line
+  ([bindery-plugins#22](https://github.com/vavallee/bindery-plugins/issues/22),
+  [#23](https://github.com/vavallee/bindery-plugins/pull/23)). The form now
+  sets its field growth policy itself instead of leaving it to the style, so
+  the fields grow with the dialog, and the minimum width comes from the dialog
+  font so it scales with the display. Reported by shannonr.
+
 ### [0.8.0] - 2026-09-27
 
 #### Added

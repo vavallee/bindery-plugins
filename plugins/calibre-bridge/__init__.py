@@ -10,7 +10,7 @@ class BinderyBridge(InterfaceActionBase):
     )
     supported_platforms = ["windows", "osx", "linux"]
     author = "vavallee"
-    version = (0, 8, 0)
+    version = (0, 8, 1)
     minimum_calibre_version = (6, 0, 0)
 
     actual_plugin = "calibre_plugins.bindery_bridge.plugin:BinderyBridgeAction"
