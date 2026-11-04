@@ -77,6 +77,15 @@ class %ACTION_CLASS%(InterfaceAction):
         except Exception:
             return None
 
+    def _toast(self, message: str, timeout_ms: int = 5000) -> None:
+        # A missing or broken status bar must never fail startup.
+        with contextlib.suppress(Exception):
+            bar = getattr(self.gui, "status_bar", None)
+            if bar is not None:
+                bar.show_message(message, timeout_ms)
+                return
+            self.gui.statusBar().showMessage(message, timeout_ms)
+
     def _start_server(self) -> None:
         _log.debug("_start_server called")
         with self._start_lock:
@@ -91,13 +100,10 @@ class %ACTION_CLASS%(InterfaceAction):
                     handler_cls=handler_cls,
                     thread_name="%MODULE_NAME%-http",
                 )
-                self.gui.status_bar.show_message(
-                    f"%DISPLAY_NAME% listening on {cfg['bind_host']}:{cfg['port']}",
-                    5000,
-                )
+                self._toast(f"%DISPLAY_NAME% listening on {cfg['bind_host']}:{cfg['port']}")
             except Exception as exc:
                 _log.error("%MODULE_NAME% failed to start: %s", exc)
-                self.gui.status_bar.show_message(f"%DISPLAY_NAME% failed to start: {exc}", 5000)
+                self._toast(f"%DISPLAY_NAME% failed to start: {exc}")
 
     def shutting_down(self) -> bool:
         _log.info("%MODULE_NAME% shutting down")

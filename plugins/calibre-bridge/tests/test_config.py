@@ -328,6 +328,70 @@ def test_start_server_falls_back_to_a_degraded_server():
         _cleanup_action(stubs)
 
 
+def test_start_server_survives_a_gui_without_status_bar():
+    """Calibre 9.17 has no gui.status_bar while genesis runs (#26).
+
+    The success toast read it after the server had started, the failure
+    handler read it again, and the AttributeError escaped genesis, so the
+    pull worker never started. The message now goes through
+    QMainWindow.statusBar() and can never fail startup.
+    """
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        bar = MagicMock()
+        action.gui = types.SimpleNamespace(statusBar=lambda: bar)
+        action._start_server()
+        assert action._server is mock_server_inst
+        mock_server_inst.start_degraded.assert_not_called()
+        bar.showMessage.assert_called_once()
+        assert "listening on 127.0.0.1:8099" in bar.showMessage.call_args.args[0]
+    finally:
+        _cleanup_action(stubs)
+
+
+def test_start_server_prefers_the_calibre_status_bar_when_present():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        action._start_server()
+        action.gui.status_bar.show_message.assert_called_once()
+        action.gui.statusBar.assert_not_called()
+    finally:
+        _cleanup_action(stubs)
+
+
+def test_start_server_ignores_a_gui_with_no_status_bar_at_all():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        action.gui = types.SimpleNamespace()
+        action._start_server()
+        assert action._server is mock_server_inst
+        mock_server_inst.start_degraded.assert_not_called()
+    finally:
+        _cleanup_action(stubs)
+
+
+def test_failed_start_reports_through_the_fallback_bar_and_goes_degraded():
+    stubs = _make_action_stubs()
+    mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
+    try:
+        action = _make_action(mod, mock_server_cls, mock_cfg)
+        bar = MagicMock()
+        action.gui = types.SimpleNamespace(statusBar=lambda: bar)
+        mock_server_inst.start.side_effect = OSError("port in use")
+        with patch.object(logging.getLogger("__init__"), "error"):
+            action._start_server()
+        mock_server_inst.start_degraded.assert_called_once()
+        assert "failed to start: port in use" in bar.showMessage.call_args.args[0]
+    finally:
+        _cleanup_action(stubs)
+
+
 def test_start_server_gives_up_when_the_degraded_server_also_fails():
     stubs = _make_action_stubs()
     mod, mock_server_cls, mock_server_inst, mock_cfg = _load_init_module(stubs)
