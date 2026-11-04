@@ -98,6 +98,24 @@ class BinderyBridgeAction(InterfaceAction):
         except Exception as exc:
             _log.debug("Calibre GUI row refresh failed: %s", exc)
 
+    def _toast(self, message: str, timeout_ms: int = 5000) -> None:
+        """Show a short message in Calibre's status bar, never raising.
+
+        The message is a courtesy. ``genesis`` runs while the main window is
+        still being built, and Calibre 9.17 has no ``gui.status_bar`` yet at
+        that point, so reading it raised ``AttributeError`` after the server
+        had already started (#26). That landed in the failure handler, which
+        read the same attribute, and the exception escaped ``genesis`` so the
+        pull worker never started. ``QMainWindow.statusBar()`` exists on every
+        Calibre; the Calibre widget stays the first choice when it is there.
+        """
+        with contextlib.suppress(Exception):
+            bar = getattr(self.gui, "status_bar", None)
+            if bar is not None:
+                bar.show_message(message, timeout_ms)
+                return
+            self.gui.statusBar().showMessage(message, timeout_ms)
+
     def _start_server(self) -> None:
         _log.debug("_start_server called")
         with self._start_lock:
@@ -118,14 +136,11 @@ class BinderyBridgeAction(InterfaceAction):
                     on_added=self._on_added,
                     on_updated=self._on_updated,
                 )
-                self.gui.status_bar.show_message(
-                    f"Bindery Bridge listening on {cfg['bind_host']}:{cfg['port']}",
-                    5000,
-                )
+                self._toast(f"Bindery Bridge listening on {cfg['bind_host']}:{cfg['port']}")
             except Exception as exc:
                 _log.error("calibre-bridge failed to start: %s", exc)
                 self._server = None
-                self.gui.status_bar.show_message(f"Bindery Bridge failed to start: {exc}", 5000)
+                self._toast(f"Bindery Bridge failed to start: {exc}")
                 self._start_degraded(server, cfg, str(exc))
 
     def _start_degraded(self, server: Any, cfg: dict, reason: str) -> None:
