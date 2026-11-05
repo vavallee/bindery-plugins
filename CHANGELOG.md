@@ -7,6 +7,23 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.8.2] - 2026-11-04
+
+#### Fixed
+
+- **The plugin starts again on Calibre 9.17.** Calibre builds its main window
+  after the plugin's `genesis` runs, so `gui.status_bar` did not exist yet
+  there. The "listening on" message read it right after the server started and
+  raised `AttributeError`, the failure handler read it again, and the exception
+  escaped `genesis`: the settings window showed Not running, Pull mode stayed
+  off, and Bindery reported that Calibre had not checked in
+  ([bindery-plugins#26](https://github.com/vavallee/bindery-plugins/issues/26),
+  [#27](https://github.com/vavallee/bindery-plugins/pull/27)). Status bar
+  messages now go through one helper that uses the Calibre status bar when it
+  exists, falls back to the Qt `statusBar()` of the main window, and ignores any
+  error, so a toast can no longer decide whether the plugin starts. Reported,
+  with the fix, by rutang5.
+
 ### [0.8.1] - 2026-10-12
 
 #### Fixed
