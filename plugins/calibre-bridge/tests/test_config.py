@@ -333,6 +333,37 @@ def test_a_directory_or_missing_path_is_left_alone(tmp_path):
         _cleanup(stubs)
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")
+def test_a_fifo_at_the_settings_path_does_not_hang_and_is_left_alone(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        fifo = tmp_path / "bindery_bridge.json"
+        os.mkfifo(fifo, 0o644)
+        done = threading.Event()
+
+        def run():
+            with patch.object(config, "prefs", _FilePrefs(str(fifo))):
+                config.load_config()
+                config.save_value("k", "v")
+            done.set()
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        try:
+            assert done.wait(3), "restricting the mode blocked on a FIFO"
+        finally:
+            if not done.is_set():
+                # Unblock the stuck open so the thread does not outlive the test.
+                fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd)
+                worker.join(3)
+        assert stat.S_ISFIFO(fifo.stat().st_mode)
+        assert stat.S_IMODE(fifo.stat().st_mode) == 0o644
+    finally:
+        _cleanup(stubs)
+
+
 def test_restricting_the_mode_is_a_no_op_off_posix(tmp_path):
     stubs = _make_qt_stubs()
     config = _load_config_module(stubs)

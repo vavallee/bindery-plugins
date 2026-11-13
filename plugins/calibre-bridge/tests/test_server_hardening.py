@@ -6,6 +6,7 @@ import importlib
 import json
 import select
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -755,3 +756,251 @@ def test_when_every_entry_is_blocked_a_new_address_is_not_tracked(bridge_handler
     clock.now += 11
     throttle.record_failure("10.1.1.1")
     assert "10.1.1.1" in throttle._entries
+
+
+# ── Per address connection cap ────────────────────────────────────────────────
+
+
+def _connect_from(source_ip, port, timeout=5):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.bind((source_ip, 0))
+    s.connect(("127.0.0.1", port))
+    return s
+
+
+def _loopback_alias_works():
+    try:
+        s = socket.socket()
+        s.bind(("127.0.0.2", 0))
+        s.close()
+    except OSError:
+        return False
+    return True
+
+
+def _read_status_line(sock):
+    reply = b""
+    while b"\r\n" not in reply:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        reply += chunk
+    return reply.split(b"\r\n", 1)[0]
+
+
+@pytest.mark.skipif(not _loopback_alias_works(), reason="needs 127.0.0.2 as a source address")
+def test_one_address_reconnecting_cannot_starve_another(server_module, tmp_path):
+    """36 sockets from one address, each reconnecting when cut, fill only its own share."""
+    srv = server_module.BridgeServer()  # the default caps: 32 overall, 8 per address
+    port = free_port()
+    srv.start(port, "127.0.0.1", "", lambda: _db(tmp_path), header_timeout=0.5)
+    attackers = []
+    try:
+        for _ in range(36):
+            s = _connect_from("127.0.0.1", port)
+            s.sendall(b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n")  # never finished
+            attackers.append(s)
+
+        seen_503 = set()
+
+        def refused():
+            for i, s in enumerate(attackers):
+                s.setblocking(False)
+                try:
+                    if s.recv(4096).startswith(b"HTTP/1.0 503"):
+                        seen_503.add(i)
+                except (BlockingIOError, ConnectionError):
+                    pass
+            return len(seen_503)
+
+        # 8 are held, the other 28 are answered 503 at once.
+        assert _wait_for(lambda: _handler_threads() == 8)
+        assert _wait_for(lambda: refused() >= 28)
+        assert _handler_threads() == 8
+
+        # A second address is served while the first is still attacking.
+        other = _connect_from("127.0.0.2", port)
+        other.sendall(b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        assert _read_status_line(other).startswith(b"HTTP/1.0 200")
+        other.close()
+    finally:
+        for s in attackers:
+            s.close()
+        srv.stop()
+
+
+def test_per_address_refusal_matches_the_global_one(server_module, tmp_path):
+    srv = server_module.BridgeServer(max_connections=8, max_per_address=2)
+    port = free_port()
+    srv.start(port, "127.0.0.1", "", lambda: _db(tmp_path), header_timeout=0.5)
+    held = []
+    try:
+        for _ in range(2):
+            s = socket.create_connection(("127.0.0.1", port))
+            s.sendall(b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+            held.append(s)
+        assert _wait_for(lambda: _handler_threads() == 2)
+        status, payload, headers = _request(port, "GET", "/v1/health", timeout=2)
+        assert status == 503
+        assert payload["code"] == "busy"
+        assert headers["Connection"] == "close"
+    finally:
+        for s in held:
+            s.close()
+        srv.stop()
+
+
+class _FakeRequest:
+    def __init__(self):
+        self.sent = b""
+        self.closed = False
+
+    def settimeout(self, _t):
+        pass
+
+    def sendall(self, data):
+        self.sent += data
+
+    def shutdown(self, _how):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class _HoldingHandler:
+    """Stands in for a request handler. It waits for ``release`` or raises ``error``."""
+
+    release = threading.Event()
+    error: BaseException | None = None
+
+    def __init__(self, request, client_address, server):
+        _HoldingHandler.release.wait(5)
+        if _HoldingHandler.error is not None:
+            raise _HoldingHandler.error
+
+
+@pytest.fixture
+def make_bounded(server_module):
+    made = []
+
+    def _make(max_connections=32, max_per_address=8):
+        _HoldingHandler.release = threading.Event()
+        _HoldingHandler.error = None
+        srv = server_module._BoundedHTTPServer(
+            ("127.0.0.1", 0), _HoldingHandler, max_connections, max_per_address
+        )
+        srv.handle_error = lambda *_a: None  # the handler errors here are deliberate
+        made.append(srv)
+        return srv
+
+    yield _make
+    _HoldingHandler.release.set()
+    for srv in made:
+        srv.server_close()
+
+
+def _offer(srv, ip):
+    """Hand the server a fake connection from ``ip`` and return it."""
+    req = _FakeRequest()
+    srv.process_request(req, (ip, 40000, 0, 0) if ":" in ip else (ip, 40000))
+    return req
+
+
+def _was_refused(req):
+    return req.sent.startswith(b"HTTP/1.0 503") and b"Connection: close" in req.sent
+
+
+def _free_slots(srv, limit):
+    got = 0
+    while got < limit and srv._slots.acquire(blocking=False):
+        got += 1
+    for _ in range(got):
+        srv._slots.release()
+    return got
+
+
+def test_one_address_is_held_to_its_cap_while_another_is_served(make_bounded):
+    srv = make_bounded(max_connections=32, max_per_address=3)
+    reqs = [_offer(srv, "10.0.0.1") for _ in range(10)]
+    assert [_was_refused(r) for r in reqs] == [False] * 3 + [True] * 7
+    assert srv._per_address == {"10.0.0.1": 3}
+    assert not _was_refused(_offer(srv, "10.0.0.2"))
+    assert srv._per_address == {"10.0.0.1": 3, "10.0.0.2": 1}
+
+
+def test_counts_return_to_zero_after_connections_close(make_bounded):
+    srv = make_bounded(max_per_address=3)
+    reqs = [_offer(srv, "10.0.0.1") for _ in range(3)]
+    _HoldingHandler.release.set()
+    assert _wait_for(lambda: srv._per_address == {})
+    assert all(r.closed for r in reqs)
+    assert _free_slots(srv, 32) == 32
+    assert not _was_refused(_offer(srv, "10.0.0.1"))
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("boom"), ConnectionResetError(104, "reset by peer"), BrokenPipeError()]
+)
+def test_counts_return_to_zero_after_a_handler_error_or_reset(make_bounded, error):
+    srv = make_bounded(max_per_address=2)
+    _HoldingHandler.error = error
+    for _ in range(2):
+        _offer(srv, "10.0.0.1")
+    _HoldingHandler.release.set()
+    assert _wait_for(lambda: srv._per_address == {})
+    assert _free_slots(srv, 32) == 32
+    # Nothing was leaked: the address can fill its cap again.
+    _HoldingHandler.release.clear()
+    _HoldingHandler.error = None
+    reqs = [_offer(srv, "10.0.0.1") for _ in range(3)]
+    assert [_was_refused(r) for r in reqs] == [False, False, True]
+
+
+def test_counts_return_to_zero_when_the_thread_cannot_start(make_bounded, monkeypatch):
+    srv = make_bounded(max_connections=4, max_per_address=2)
+
+    def boom(self, request, client_address):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(socketserver.ThreadingMixIn, "process_request", boom)
+    with pytest.raises(RuntimeError):
+        _offer(srv, "10.0.0.1")
+    assert srv._per_address == {}
+    assert _free_slots(srv, 4) == 4
+
+
+def test_a_per_address_refusal_does_not_leak_a_global_slot(make_bounded):
+    srv = make_bounded(max_connections=3, max_per_address=1)
+    assert not _was_refused(_offer(srv, "10.0.0.1"))
+    for _ in range(5):
+        assert _was_refused(_offer(srv, "10.0.0.1"))
+    assert not _was_refused(_offer(srv, "10.0.0.2"))
+    assert not _was_refused(_offer(srv, "10.0.0.3"))
+
+
+def test_the_global_cap_still_applies(make_bounded):
+    srv = make_bounded(max_connections=3, max_per_address=8)
+    held = [_offer(srv, f"10.0.0.{n}") for n in range(1, 4)]
+    assert not any(_was_refused(r) for r in held)
+    assert _was_refused(_offer(srv, "10.0.0.4"))
+    assert "10.0.0.4" not in srv._per_address
+
+
+def test_ipv6_peers_are_counted_by_their_slash_64(make_bounded):
+    srv = make_bounded(max_per_address=2)
+    assert not _was_refused(_offer(srv, "2001:db8:0:1::1"))
+    assert not _was_refused(_offer(srv, "2001:db8:0:1:aaaa::2"))
+    assert _was_refused(_offer(srv, "2001:db8:0:1:ffff:ffff:ffff:ffff"))
+    # Another /64 is a different source.
+    assert not _was_refused(_offer(srv, "2001:db8:0:2::1"))
+    assert srv._per_address == {"2001:db8:0:1::/64": 2, "2001:db8:0:2::/64": 1}
+
+
+def test_an_ipv4_mapped_peer_counts_as_the_ipv4_address(make_bounded):
+    srv = make_bounded(max_per_address=2)
+    assert not _was_refused(_offer(srv, "10.0.0.1"))
+    assert not _was_refused(_offer(srv, "::ffff:10.0.0.1"))
+    assert _was_refused(_offer(srv, "10.0.0.1"))
+    assert srv._per_address == {"10.0.0.1": 2}

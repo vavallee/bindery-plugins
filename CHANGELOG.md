@@ -27,6 +27,9 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
   at once (more get `503`).
 - **Settings file mode.** The file that holds the API key is set to owner read
   and write only after every save, where the platform supports it.
+- **Per address connection cap.** One client address may hold at most 8 of the
+  32 connections at once (an IPv6 address counts by its /64), so a single source
+  cannot take every slot. Further connections from it get `503`.
 
 ### [0.8.3] - 2026-11-12
 

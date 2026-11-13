@@ -80,7 +80,10 @@ def _restrict_file_mode() -> None:
         if not isinstance(path, str) or nofollow is None or not hasattr(os, "fchmod"):
             return
         try:
-            fd = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0))
+            # O_NONBLOCK so a FIFO at this path cannot hang the open waiting
+            # for a writer. It is not a regular file, so it is skipped below.
+            flags = os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0)
+            fd = os.open(path, flags | getattr(os, "O_CLOEXEC", 0))
         except FileNotFoundError:
             return
         except OSError as exc:

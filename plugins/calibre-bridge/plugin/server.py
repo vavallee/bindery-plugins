@@ -9,6 +9,7 @@ from calibre_plugins.bindery_bridge.plugin.handlers import (
     DEFAULT_BODY_TIMEOUT,
     DEFAULT_HEADER_TIMEOUT,
     SERVER_NAME,
+    _throttle_key,
     make_degraded_handler,
     make_handler,
 )
@@ -25,6 +26,13 @@ MIN_NETWORK_KEY_LENGTH = 16
 # closed, never queued, so stalled sockets cannot pin threads without limit.
 DEFAULT_MAX_CONNECTIONS = 32
 
+# Connections one peer address may hold at once, inside the cap above, so a
+# single source cannot take every slot. Keyed like the failure throttle: an IPv6
+# peer by its /64, an IPv4 mapped one as the IPv4 address. Bindery opens its
+# requests one after another, so 8 is well above what it needs, including when
+# every container on a Docker bridge arrives from one address.
+DEFAULT_MAX_CONNECTIONS_PER_ADDRESS = 8
+
 _BUSY_BODY = b'{"error": "too many connections", "code": "busy"}'
 _BUSY_RESPONSE = (
     b"HTTP/1.0 503 Service Unavailable\r\n"
@@ -38,21 +46,63 @@ _BUSY_RESPONSE = (
 
 
 class _BoundedHTTPServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer with daemon threads and a cap on connections in flight."""
+    """ThreadingHTTPServer with daemon threads and caps on connections in flight.
+
+    There is one cap for the server and one for each peer address. Over either,
+    the connection gets a 503 and is closed, never queued.
+    """
 
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], handler: type, max_connections: int) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        handler: type,
+        max_connections: int,
+        max_per_address: int = DEFAULT_MAX_CONNECTIONS_PER_ADDRESS,
+    ) -> None:
         self._slots = threading.BoundedSemaphore(max_connections)
+        self._max_per_address = max_per_address
+        self._per_address: dict[str, int] = {}
+        self._per_address_lock = threading.Lock()
         super().__init__(address, handler)
+
+    @staticmethod
+    def _peer_key(client_address: Any) -> str:
+        try:
+            return str(_throttle_key(str(client_address[0])))
+        except (TypeError, IndexError, KeyError):
+            return str(client_address)
+
+    def _take_address(self, key: str) -> bool:
+        with self._per_address_lock:
+            count = self._per_address.get(key, 0)
+            if count >= self._max_per_address:
+                return False
+            self._per_address[key] = count + 1
+            return True
+
+    def _drop_address(self, key: str) -> None:
+        with self._per_address_lock:
+            count = self._per_address.get(key, 0) - 1
+            if count > 0:
+                self._per_address[key] = count
+            else:
+                self._per_address.pop(key, None)
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._slots.acquire(blocking=False):
             self._refuse(request)
             return
+        key = self._peer_key(client_address)
+        if not self._take_address(key):
+            self._slots.release()
+            self._refuse(request)
+            return
         try:
             super().process_request(request, client_address)
         except BaseException:
+            self._drop_address(key)
             self._slots.release()
             raise
 
@@ -60,6 +110,7 @@ class _BoundedHTTPServer(ThreadingHTTPServer):
         try:
             super().process_request_thread(request, client_address)
         finally:
+            self._drop_address(self._peer_key(client_address))
             self._slots.release()
 
     def _refuse(self, request: Any) -> None:
@@ -77,8 +128,13 @@ def _is_loopback(bind_host: str) -> bool:
 
 
 class BridgeServer:
-    def __init__(self, max_connections: int = DEFAULT_MAX_CONNECTIONS) -> None:
+    def __init__(
+        self,
+        max_connections: int = DEFAULT_MAX_CONNECTIONS,
+        max_per_address: int = DEFAULT_MAX_CONNECTIONS_PER_ADDRESS,
+    ) -> None:
         self._max_connections = max_connections
+        self._max_per_address = max_per_address
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.degraded_reason = ""
@@ -147,7 +203,9 @@ class BridgeServer:
         _log.error("calibre-bridge degraded on %s:%d: %s", bind_host, port, reason)
 
     def _serve(self, handler_cls: type, port: int, bind_host: str) -> None:
-        self._httpd = _BoundedHTTPServer((bind_host, port), handler_cls, self._max_connections)
+        self._httpd = _BoundedHTTPServer(
+            (bind_host, port), handler_cls, self._max_connections, self._max_per_address
+        )
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="bindery-bridge-http",
