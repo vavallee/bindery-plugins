@@ -58,7 +58,9 @@ class BinderyBridgeAction(InterfaceAction):
         self._start_lock = threading.Lock()
         # Built here because genesis runs on the GUI thread, which is the
         # thread the Dispatcher delivers to. Held on self so it is not
-        # collected while the server still calls it.
+        # collected while the server still calls it. It is only a thread
+        # hop: nothing about the library view is captured here, because the
+        # window is built after genesis. _refresh_gui finds the view when it runs.
         self._on_added = _gui_thread_dispatcher(self._refresh_gui)
         # The same, for a push that changed a row already in the view (a
         # format added to it, or an empty row repaired). books_added would
@@ -76,25 +78,37 @@ class BinderyBridgeAction(InterfaceAction):
     def _get_gui(self) -> Any:
         return self.gui
 
-    def _refresh_gui(self, count: int) -> None:
-        """Show ``count`` newly added books. Runs on the GUI thread."""
+    def _refresh_gui(self, count: int, book_id: int = 0) -> None:
+        """Show books that were just added. Runs on the GUI thread.
+
+        ``self.gui.library_view`` is looked up now, never kept from ``genesis``,
+        and the work is in ``adder.show_new_books``: the plugin adds through the
+        database cache, which does not tell the library view about new books, so
+        they have to be registered with it before the list can show them.
+        ``book_id`` is the book that queued this refresh, when the adder knows it.
+        """
         try:
-            self.gui.library_view.model().books_added(count)
-            self.gui.tags_view.recount()
+            from calibre_plugins.bindery_bridge.plugin import adder
+
+            if book_id:
+                adder.show_new_books(self.gui, count, book_id)
+            else:
+                adder.show_new_books(self.gui, count)
         except Exception as exc:
             _log.debug("Calibre GUI refresh failed: %s", exc)
 
     def _refresh_gui_row(self, book_id: int) -> None:
         """Redraw a book that was already in the library. Runs on the GUI thread.
 
-        ``BooksModel.refresh_ids(ids, current_row=-1)`` (checked on Calibre
-        9.14) re-reads those rows from the database and repaints them, which
-        is what a new format on an existing row needs. The tag browser counts
-        formats, so it is recounted as well.
+        ``BooksModel.refresh_ids(ids, current_row=-1)`` re-reads those rows from
+        the database and repaints them, which is what a new format on an
+        existing row needs. A row the view never learned about is registered as
+        a new one instead. See ``adder.redraw_book``.
         """
         try:
-            self.gui.library_view.model().refresh_ids([book_id])
-            self.gui.tags_view.recount()
+            from calibre_plugins.bindery_bridge.plugin import adder
+
+            adder.redraw_book(self.gui, book_id)
         except Exception as exc:
             _log.debug("Calibre GUI row refresh failed: %s", exc)
 

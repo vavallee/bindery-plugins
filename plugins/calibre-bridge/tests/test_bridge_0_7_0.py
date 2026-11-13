@@ -13,6 +13,7 @@ gets a file added.
 
 import sys
 import threading
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -452,11 +453,11 @@ def test_genesis_builds_an_on_updated_dispatcher_that_refreshes_the_row():
         assert on_updated.constructed_on is threading.main_thread()
         assert mock_server_inst.start.call_args.kwargs["on_updated"] is on_updated
 
+        adder_stub = types.SimpleNamespace(redraw_book=MagicMock(), show_new_books=MagicMock())
+        sys.modules["calibre_plugins.bindery_bridge.plugin"].adder = adder_stub
         on_updated(7)
-        model = action.gui.library_view.model()
-        model.refresh_ids.assert_called_once_with([7])
-        model.books_added.assert_not_called()
-        action.gui.tags_view.recount.assert_called_once_with()
+        adder_stub.redraw_book.assert_called_once_with(action.gui, 7)
+        adder_stub.show_new_books.assert_not_called()
     finally:
         _cleanup_genesis(stubs)
 

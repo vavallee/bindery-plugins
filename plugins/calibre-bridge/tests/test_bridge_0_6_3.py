@@ -15,6 +15,7 @@ Three separate fixes, grouped because they ship together:
 
 import sys
 import threading
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -248,10 +249,12 @@ def test_genesis_builds_a_dispatcher_and_hands_it_to_the_server():
         assert action._on_added is dispatcher
         assert mock_server_inst.start.call_args.kwargs["on_added"] is dispatcher
 
-        # Calling it (as the worker thread would) runs the refresh body.
+        # Calling it (as the worker thread would) runs the refresh body, which
+        # lives in the adder. test_gui_refresh covers what that body does.
+        adder_stub = types.SimpleNamespace(show_new_books=MagicMock())
+        sys.modules["calibre_plugins.bindery_bridge.plugin"].adder = adder_stub
         dispatcher(3)
-        action.gui.library_view.model().books_added.assert_called_once_with(3)
-        action.gui.tags_view.recount.assert_called_once_with()
+        adder_stub.show_new_books.assert_called_once_with(action.gui, 3)
     finally:
         _cleanup_genesis(stubs)
 
