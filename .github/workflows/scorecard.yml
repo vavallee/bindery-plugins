@@ -6,7 +6,8 @@ on:
     - cron: "0 7 * * 1"
   push:
     branches: [main]
-  # Lets a change to this workflow be run from its branch before it merges.
+  # A manual re-run on main. The action refuses any other ref, so this cannot
+  # test a branch.
   workflow_dispatch:
 
 permissions: read-all
