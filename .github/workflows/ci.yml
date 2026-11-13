@@ -65,6 +65,32 @@ jobs:
         run: |
           (cd plugins/calibre-bridge && mypy --ignore-missing-imports --explicit-package-bases plugin)
           mypy --ignore-missing-imports scripts/
+      # The tarball is checked against a digest written here, so a changed
+      # release asset fails the job instead of running. To bump, take the new
+      # digest from the release's checksums file and update both lines.
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint" -color
+      # Every `uses:` that names a remote action must be a full commit SHA.
+      # Local reusable workflows (./.github/...) are exempt.
+      - name: Actions are pinned to commit SHAs
+        run: |
+          unpinned=$(grep -rnE '^\s*(-\s+)?uses:' .github \
+            | grep -vE 'uses:\s+\./' \
+            | grep -vE 'uses:\s+[^ ]+@[0-9a-f]{40}(\s|$)' || true)
+          if [ -n "${unpinned}" ]; then
+            echo "These uses: lines are not pinned to a 40 character commit SHA:"
+            echo "${unpinned}"
+            exit 1
+          fi
 
   build:
     name: build

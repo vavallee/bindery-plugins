@@ -6,6 +6,12 @@
 # real to look at. Keep the pins exact: a floating version turns a dependency
 # audit into a moving target.
 #
+# Only the top level tools are pinned, and without hashes. The transitive set
+# differs per interpreter (the 3.10, 3.11 and 3.14 matrix resolves different
+# versions), so a single hash locked file would need per version markers.
+# `pip-audit` is run on 3.12 in CI; on 3.10 it reports filelock advisories
+# whose fixes need 3.11 or later (see .github/workflows/security.yml).
+#
 # Licences, checked before pinning: pytest MIT, pytest-cov MIT, bandit
 # Apache-2.0, ruff MIT, mypy MIT, pip-audit Apache-2.0. All permissive.
 pytest==9.1.1
