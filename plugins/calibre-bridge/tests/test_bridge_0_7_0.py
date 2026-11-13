@@ -308,7 +308,7 @@ def test_health_advertises_add_format(bridge_handlers, serve_bridge):
     status, payload, _ = bridge.call("GET", "/v1/health")
     assert status == 200
     assert "add_format" in payload["capabilities"]
-    assert payload["plugin_version"] == "0.8.2"
+    assert payload["plugin_version"] == "0.8.3"
 
 
 # ── GUI refresh: an existing row is redrawn, not inserted ────────────────────
