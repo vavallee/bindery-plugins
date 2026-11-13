@@ -10,6 +10,9 @@ class BinderyBridge(InterfaceActionBase):
     )
     supported_platforms = ["windows", "osx", "linux"]
     author = "vavallee"
+    # The one place the version is written. plugin/handlers.py derives
+    # PLUGIN_VERSION from it, and scripts/ read it for the zip name and the
+    # release checks.
     version = (0, 8, 3)
     minimum_calibre_version = (6, 0, 0)
 

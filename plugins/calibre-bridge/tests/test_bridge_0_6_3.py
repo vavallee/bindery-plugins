@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from .conftest import PLUGIN_VERSION
 from .test_config import _cleanup_action, _load_init_module, _make_action_stubs
 from .test_dedupe_ladder import FakeDB, FakeMetadata, _book
 from .test_empty_rows import FormatLibrary
@@ -296,7 +297,7 @@ def test_health_hides_the_library_without_a_token(bridge_handlers, serve_bridge)
     status, payload, _ = bridge.call("GET", "/v1/health")
     assert status == 200
     assert payload["library"] == ""
-    assert payload["plugin_version"] == "0.8.3"
+    assert payload["plugin_version"] == PLUGIN_VERSION
     assert "error_codes" in payload["capabilities"]
 
 

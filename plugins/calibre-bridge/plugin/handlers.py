@@ -7,7 +7,48 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-PLUGIN_VERSION = "0.8.3"
+
+def _plugin_version() -> str:
+    """The plugin version, read from the one place it is written.
+
+    ``version = (X, Y, Z)`` on the plugin class in the top level
+    ``__init__.py`` is what Calibre itself reads, so nothing else spells the
+    number out. Inside Calibre that file is the ``calibre_plugins.bindery_bridge``
+    package, which Calibre imports before it loads anything under ``plugin/``.
+    The test suite loads this file by path with that package stubbed or absent,
+    so there the same file is parsed from disk, one directory up.
+    """
+    try:
+        from calibre_plugins.bindery_bridge import BinderyBridge
+
+        version = BinderyBridge.version
+    except ImportError as import_error:
+        import ast
+        import pathlib
+
+        init_file = pathlib.Path(__file__).resolve().parent.parent / "__init__.py"
+        try:
+            source = init_file.read_text(encoding="utf-8")
+        except OSError as read_error:
+            why_parse = f"{init_file} could not be read ({read_error})"
+        else:
+            match = re.search(r"^[ \t]+version\s*=\s*(\([^)]*\))", source, re.M)
+            if match is not None:
+                return ".".join(str(part) for part in ast.literal_eval(match.group(1)))
+            why_parse = f"{init_file} has no version tuple"
+        raise RuntimeError(
+            "The plugin version could not be determined. Two strategies were tried. "
+            "(1) Importing BinderyBridge from calibre_plugins.bindery_bridge failed "
+            f"({import_error}). "
+            f"(2) Parsing the package __init__.py next to this file failed: {why_parse}. "
+            "This happens inside a zip, where __file__ is not a real path. "
+            "The package __init__ must not import plugin.* at module level, because "
+            "that makes the import in (1) circular."
+        ) from import_error
+    return ".".join(str(part) for part in version)
+
+
+PLUGIN_VERSION = _plugin_version()
 
 # Optional protocol features. A client that understands none of them still
 # works: everything 0.6.0 adds is a new endpoint, a new response field or a
