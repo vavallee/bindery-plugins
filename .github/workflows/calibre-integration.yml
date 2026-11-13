@@ -1,0 +1,71 @@
+name: Calibre integration
+
+# Runs the Calibre Bridge against a real Calibre. Every other test in this
+# repository replaces Calibre with fakes, which is how a plugin that did not
+# start (#26) and one whose books did not show in the list (#30) both shipped
+# with a green build. See CONTRIBUTING.md, "Real Calibre checks".
+#
+# The steps live in calibre-check.yml, shared by both jobs below. It is a
+# reusable workflow rather than a composite action because it needs no extra
+# dependabot directory to keep its action SHAs current, the checkout stays in
+# one place, and its permissions can only narrow the `contents: read` set here.
+
+on:
+  push:
+    # Runs on main as well as on pull requests so the Calibre installs are
+    # cached where every pull request can restore them: a cache saved by one
+    # pull request is not visible to another.
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, Wednesday morning UTC.
+    - cron: "23 5 * * 3"
+  workflow_dispatch:
+    inputs:
+      plugin_ref:
+        description: >-
+          Tag or commit whose plugins/calibre-bridge is built and tested,
+          for example v-calibre-bridge-0.8.2. The scripts always come from
+          the ref the workflow runs on. Empty tests that ref's own plugin.
+        required: false
+        default: ""
+
+# Repeated pushes to a pull request replace the run in progress instead of
+# stacking cold cache runs. Other events are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  pinned:
+    name: calibre ${{ matrix.calibre }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The one place the pinned versions are written. To add a Calibre
+        # line, append its newest release from https://download.calibre-ebook.com/
+        # here; nothing else needs to change. The last release of each major
+        # line the plugin supports (minimum_calibre_version is 6.0.0) plus a
+        # pinned 9.x. Bump the 9.x pin by hand when a new Calibre is worth
+        # holding the plugin to.
+        calibre: ["6.29.0", "7.26.0", "8.16.2", "9.18.0"]
+    uses: ./.github/workflows/calibre-check.yml
+    with:
+      calibre: ${{ matrix.calibre }}
+      plugin_ref: ${{ inputs.plugin_ref }}
+
+  # Whatever Calibre released most recently. It is early warning of a Calibre
+  # change, so it runs only weekly and on demand, never on a pull request or a
+  # push. It has no continue-on-error on purpose: a failure fails the
+  # scheduled run, and a failed scheduled run is what GitHub notifies about.
+  latest:
+    name: calibre latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/calibre-check.yml
+    with:
+      calibre: latest
+      plugin_ref: ${{ inputs.plugin_ref }}
