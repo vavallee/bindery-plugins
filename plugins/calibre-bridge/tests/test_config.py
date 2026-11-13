@@ -30,9 +30,15 @@ def _make_qt_stubs():
         def setMinimumWidth(self, width):
             self.minimum_width = width
 
+        def showEvent(self, event):
+            pass
+
+        def hideEvent(self, event):
+            pass
+
     qt_core.QWidget = _QWidget
 
-    for name in ("QCheckBox", "QFormLayout", "QHBoxLayout", "QLabel", "QSpinBox"):
+    for name in ("QCheckBox", "QFormLayout", "QHBoxLayout", "QLabel", "QSpinBox", "QTimer", "Qt"):
         cls = MagicMock(name=name)
         setattr(qt_core, name, cls)
 
@@ -431,6 +437,8 @@ def test_config_widget_builds_every_row():
             "Bindery URL:",
             "CA file:",
             "Pull status:",
+            "Debug log:",
+            "Log file:",
         ]
         widget.port_input.setRange.assert_called_with(1, 65535)
         widget.port_input.setValue.assert_called_with(8123)

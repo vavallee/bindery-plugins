@@ -58,7 +58,8 @@ plugin connects out to Bindery and fetches each book itself. Needs plugin
    and the same API key.
 5. Reopen the plugin settings. **Pull status** should read "Connected to
    Bindery; nothing waiting", or report how many books the last pass
-   delivered. Messages you may see instead:
+   delivered and how many are still waiting. The line updates every few
+   seconds while the window is open. Messages you may see instead:
    - "Bindery is set to push": step 4 is not done yet.
    - "Bindery rejected the API key": the two keys differ. The plugin waits an
      hour before trying again, or saving the settings retries at once.
@@ -247,6 +248,58 @@ set, rather than silently ignoring it.
 If you ran 0.1.x, the plugin is not installed no matter what the pod logs said.
 Upgrade the chart and restart the Calibre pod, then confirm with
 `calibre-customize -l` as in Tier 1B.
+
+## Troubleshooting
+
+Start with the plugin settings (**Preferences, Plugins, User plugins, Bindery
+Bridge, Customize**, or the Bindery Bridge toolbar button). The two status
+lines update every few seconds while the window is open:
+
+- **Status** says whether the push server is listening, and why not if it is
+  not.
+- **Pull status** shows the result of the last pass, how many deliveries are
+  still waiting in Bindery, the last error with the time it happened, and the
+  time of the last successful check. The error goes away after the next pass
+  that reaches Bindery and finishes cleanly.
+
+### Warnings without any setup
+
+Start Calibre from a terminal with `calibre-debug -g`. The plugin prints its
+warnings and errors there. That includes every step of the book list refresh
+that failed, on a line starting with `Calibre GUI refresh:`, which is the
+place to look when a delivered book only shows up after Ctrl+R. Warnings keep
+appearing there while the debug log is on. That stderr copy is not redacted,
+only the log file is, so do not paste raw `calibre-debug -g` output into a
+public issue without checking it for your API key first.
+
+### The debug log
+
+Warnings are not the whole story. To record everything the plugin does:
+
+1. Open the plugin settings, tick **Write debug log** and save. It takes
+   effect at once, with no restart.
+2. Do the thing that goes wrong.
+3. Open the file. **Log file** in the settings window shows the full path and
+   can be selected and copied, and **Open log folder** opens the folder. The
+   file is `bindery_bridge.log` in Calibre's configuration folder:
+   `%APPDATA%\calibre` on Windows, `~/Library/Preferences/calibre` on macOS,
+   `~/.config/calibre` on Linux, and usually `/config/.config/calibre` in a
+   `linuxserver/calibre` container.
+4. Untick **Write debug log** and save when you are done.
+
+The log holds at most 1 MB, plus the two files before it (`.log.1` and
+`.log.2`), so it never grows past about 3 MB. If it cannot be opened, the
+**Status** line says so and gives the reason.
+
+For a bug report, paste:
+
+- the lines of `bindery_bridge.log` from around the time of the problem,
+- the **Status** and **Pull status** lines,
+- the plugin version, the Calibre version and the operating system.
+
+The API key is never written to the log. File paths, which usually include
+the author and the title, and your Bindery address are, so read what you paste
+before you post it.
 
 ## Tier 3: Calibre "Get new plugins" index (future)
 
