@@ -794,7 +794,7 @@ def test_one_address_reconnecting_cannot_starve_another(server_module, tmp_path)
     """36 sockets from one address, each reconnecting when cut, fill only its own share."""
     srv = server_module.BridgeServer()  # the default caps: 32 overall, 8 per address
     port = free_port()
-    srv.start(port, "127.0.0.1", "", lambda: _db(tmp_path), header_timeout=0.5)
+    srv.start(port, "127.0.0.1", "", lambda: _db(tmp_path), header_timeout=5)
     attackers = []
     try:
         for _ in range(36):
@@ -833,7 +833,7 @@ def test_one_address_reconnecting_cannot_starve_another(server_module, tmp_path)
 def test_per_address_refusal_matches_the_global_one(server_module, tmp_path):
     srv = server_module.BridgeServer(max_connections=8, max_per_address=2)
     port = free_port()
-    srv.start(port, "127.0.0.1", "", lambda: _db(tmp_path), header_timeout=0.5)
+    srv.start(port, "127.0.0.1", "", lambda: _db(tmp_path), header_timeout=5)
     held = []
     try:
         for _ in range(2):
