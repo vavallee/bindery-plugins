@@ -13,7 +13,7 @@ class BinderyBridge(InterfaceActionBase):
     # The one place the version is written. plugin/handlers.py derives
     # PLUGIN_VERSION from it, and scripts/ read it for the zip name and the
     # release checks.
-    version = (0, 8, 3)
+    version = (0, 8, 4)
     minimum_calibre_version = (6, 0, 0)
 
     actual_plugin = "calibre_plugins.bindery_bridge.plugin:BinderyBridgeAction"
