@@ -1,5 +1,7 @@
 import contextlib
+import logging
 import os
+import stat
 from typing import Any
 
 from calibre.utils.config import JSONConfig
@@ -49,6 +51,8 @@ DEFAULTS = {
     "debug_log": False,
 }
 
+_log = logging.getLogger(__name__)
+
 # Longest debug log failure reason the Status line shows.
 MAX_PROBLEM_CHARS = 300
 
@@ -60,13 +64,51 @@ for k, v in DEFAULTS.items():
     prefs.defaults[k] = v
 
 
+def _restrict_file_mode() -> None:
+    """Make the settings file readable by its owner only (it holds the api_key).
+
+    Calibre writes it 0644 inside its config directory, and rewrites it on
+    every save, so this runs after every write. A symlink is left alone, not
+    followed. A failure here, or a platform without POSIX modes, must never stop
+    settings from loading or saving.
+    """
+    if os.name != "posix":
+        return
+    try:
+        path = getattr(prefs, "file_path", None)
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if not isinstance(path, str) or nofollow is None or not hasattr(os, "fchmod"):
+            return
+        try:
+            # O_NONBLOCK so a FIFO at this path cannot hang the open waiting
+            # for a writer. It is not a regular file, so it is skipped below.
+            flags = os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0)
+            fd = os.open(path, flags | getattr(os, "O_CLOEXEC", 0))
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            # ELOOP when the path is a symlink; not ours to chmod.
+            _log.debug("settings file mode left as is (%s): %s", path, exc)
+            return
+        try:
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+    # Best effort only; the config directory is already private to the user.
+    except Exception as exc:  # nosec B110
+        _log.debug("could not restrict the settings file mode: %s", exc)
+
+
 def load_config() -> dict:
+    _restrict_file_mode()
     return {k: prefs.get(k, v) for k, v in DEFAULTS.items()}
 
 
 def save_value(key: str, value: object) -> None:
     """Persist one setting outside the dialog (the pull library id)."""
     prefs[key] = value
+    _restrict_file_mode()
 
 
 def _pull_status_summary() -> str:
@@ -326,6 +368,7 @@ class ConfigWidget(QWidget):
         prefs["bindery_url"] = self.bindery_url_input.text().strip()
         prefs["ca_file"] = self.ca_file_input.text().strip()
         prefs["debug_log"] = bool(self.debug_log_input.isChecked())
+        _restrict_file_mode()
         # After the API key is saved, so the log redacts the new one.
         apply_debug_log()
         _notify_saved()

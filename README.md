@@ -95,7 +95,9 @@ gh attestation verify calibre-bridge-vX.Y.Z.zip --repo vavallee/bindery-plugins
    it as above.
 2. Calibre: **Preferences, Plugins, Load plugin from file**, select the `.zip`.
 3. Restart Calibre, then open **Preferences, Plugins, User plugins, Bindery
-   Bridge, Customize** and set the listen port, bind host, and API key.
+   Bridge, Customize** and set the listen port, bind host, and API key
+   (press **Generate**; a network bind needs a key of at least 16 characters).
+   A bridge with no key is for local use only on `127.0.0.1`.
 4. Point Bindery at it: **Settings, Calibre, mode `plugin`**, URL
    `http://<calibre-host>:<port>`. If Bindery cannot reach this machine, use
    pull mode instead ([Tier 1C](docs/installation.md#tier-1c-desktop-calibre-with-pull-mode)).

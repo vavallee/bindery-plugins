@@ -3,7 +3,8 @@
 Bindery Plugins (the Calibre Bridge plugin and associated tooling) is distributed
 alongside [Bindery](https://github.com/vavallee/bindery) and shares its security
 posture. The API key set in the plugin config is stored in Calibre's own config
-store and is never logged.
+store (the file is set to owner read and write only where the platform
+supports it) and is never logged.
 
 With pull mode off (the default) the plugin makes no outbound connections: the
 key is only compared against the bearer token Bindery presents when it calls

@@ -109,7 +109,7 @@ def test_non_loopback_with_api_key_starts(server_module):
     srv = server_module.BridgeServer()
     port = _free_port()
     # An api_key is set, so a non-loopback bind is allowed.
-    srv.start(port=port, bind_host="0.0.0.0", api_key="secret", get_db=lambda: db)
+    srv.start(port=port, bind_host="0.0.0.0", api_key="s" * 32, get_db=lambda: db)
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/health")
         with urllib.request.urlopen(req, timeout=5) as resp:

@@ -3,11 +3,15 @@
 import importlib
 import importlib.util
 import logging
+import os
 import pathlib
+import stat
 import sys
 import threading
 import types
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 _PLUGIN_DIR = pathlib.Path(__file__).resolve().parent.parent / "plugin"
 
@@ -189,6 +193,191 @@ def test_config_widget_commit_uses_default_for_empty_bind_host():
             config.ConfigWidget.commit(self)
 
         assert real_prefs["bind_host"] == "0.0.0.0"
+    finally:
+        _cleanup(stubs)
+
+
+# ── settings file permissions ─────────────────────────────────────────────────
+
+
+class _FilePrefs(dict):
+    """A prefs stand-in that, like JSONConfig, knows the path it persists to."""
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+
+def _widget_with_key(key):
+    self = MagicMock()
+    self.port_input.value.return_value = 8099
+    self.bind_host_input.text.return_value = "127.0.0.1"
+    self.api_key_input.text.return_value = key
+    return self
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_commit_restricts_the_settings_file_to_its_owner(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        with patch.object(config, "prefs", _FilePrefs(str(path))):
+            config.ConfigWidget.commit(_widget_with_key("k" * 32))
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_load_config_tightens_an_existing_settings_file(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        with patch.object(config, "prefs", _FilePrefs(str(path))):
+            config.load_config()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        _cleanup(stubs)
+
+
+def test_a_failed_chmod_never_breaks_saving(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        saved = _FilePrefs(str(path))
+        with (
+            patch.object(config, "prefs", saved),
+            patch.object(config.os, "fchmod", side_effect=PermissionError("no")),
+        ):
+            config.ConfigWidget.commit(_widget_with_key("k" * 32))
+        assert saved["api_key"] == "k" * 32
+        # No file on disk at all is also fine.
+        with patch.object(config, "prefs", _FilePrefs(str(tmp_path / "absent.json"))):
+            config.ConfigWidget.commit(_widget_with_key("k" * 32))
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_save_value_restricts_the_settings_file(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+
+        class _Rewriting(_FilePrefs):
+            """Like Calibre, every write puts a 0644 file back."""
+
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                with open(self.file_path, "w") as fh:
+                    fh.write("{}")
+                os.chmod(self.file_path, 0o644)
+
+        saved = _Rewriting(str(path))
+        with patch.object(config, "prefs", saved):
+            config.save_value("pull_library_id", "lib-1")
+        assert saved["pull_library_id"] == "lib-1"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_a_symlinked_settings_file_is_not_followed(tmp_path, caplog):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        target = tmp_path / "elsewhere.json"
+        target.write_text("{}")
+        target.chmod(0o644)
+        link = tmp_path / "bindery_bridge.json"
+        link.symlink_to(target)
+        caplog.set_level(logging.DEBUG)
+        with patch.object(config, "prefs", _FilePrefs(str(link))):
+            config.load_config()
+            config.save_value("pull_library_id", "x")
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        assert link.is_symlink()
+        assert "settings file mode left as is" in caplog.text
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_a_directory_or_missing_path_is_left_alone(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        folder = tmp_path / "bindery_bridge.json"
+        folder.mkdir()
+        folder.chmod(0o755)
+        with patch.object(config, "prefs", _FilePrefs(str(folder))):
+            config.load_config()
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o755
+        with patch.object(config, "prefs", _FilePrefs(str(tmp_path / "absent.json"))):
+            config.save_value("k", "v")
+        with patch.object(config, "prefs", _FilePrefs(None)):
+            config.load_config()
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")
+def test_a_fifo_at_the_settings_path_does_not_hang_and_is_left_alone(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        fifo = tmp_path / "bindery_bridge.json"
+        os.mkfifo(fifo, 0o644)
+        done = threading.Event()
+
+        def run():
+            with patch.object(config, "prefs", _FilePrefs(str(fifo))):
+                config.load_config()
+                config.save_value("k", "v")
+            done.set()
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        try:
+            assert done.wait(3), "restricting the mode blocked on a FIFO"
+        finally:
+            if not done.is_set():
+                # Unblock the stuck open so the thread does not outlive the test.
+                fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd)
+                worker.join(3)
+        assert stat.S_ISFIFO(fifo.stat().st_mode)
+        assert stat.S_IMODE(fifo.stat().st_mode) == 0o644
+    finally:
+        _cleanup(stubs)
+
+
+def test_restricting_the_mode_is_a_no_op_off_posix(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        with (
+            patch.object(config, "prefs", _FilePrefs(str(path))),
+            patch.object(config.os, "name", "nt"),
+            patch.object(config.os, "open", side_effect=AssertionError("must not open")),
+        ):
+            config.load_config()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
     finally:
         _cleanup(stubs)
 
