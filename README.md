@@ -7,9 +7,9 @@ codebase.
 
 ## Plugins
 
-| Name             | Target       | Path                        | Status  |
+| Name             | Target       | Path                        | Release |
 |------------------|--------------|-----------------------------|---------|
-| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | v0.8.3  |
+| Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | [latest](https://github.com/vavallee/bindery-plugins/releases/latest) |
 
 ### What Bindery Bridge exposes
 
@@ -51,15 +51,22 @@ plus what Calibre provides in process. Everything in
 
 ## How a release is produced
 
-1. A `v*` tag on `main` triggers `.github/workflows/ci.yml`.
+1. A `v-calibre-bridge-X.Y.Z` tag on `main` triggers
+   `.github/workflows/ci.yml`. No other tag does.
 2. `test`, `test release tooling` and `lint` gate the build. The plugin test
    matrix is Python 3.10, 3.11 and 3.14, which is what Calibre 6, Calibre 7 and
    8, and Calibre 9 embed respectively, read from `bypy/sources.json` in the
    Calibre tree.
 3. `build` runs `scripts/build_plugin.py` and verifies the checksum sidecar
    against the zip it just produced.
-4. `release` extracts the matching `CHANGELOG.md` section and publishes the zip
-   and the `.sha256` to GitHub Releases.
+4. `release` first runs `scripts/release_guard.py`, which refuses to go on
+   unless the tag's version is the one in the plugin's `__init__.py`, the
+   tagged commit is on `main`, and `CHANGELOG.md` has notes for that version.
+   It then attests the zip's build provenance and publishes the zip and the
+   `.sha256` to GitHub Releases, with that changelog section as the notes.
+
+The steps a maintainer takes are in
+[CONTRIBUTING.md](CONTRIBUTING.md#cutting-a-release).
 
 ## How to verify a release
 
@@ -71,6 +78,13 @@ sha256sum -c calibre-bridge-vX.Y.Z.zip.sha256
 
 The Helm installer in `charts/calibre-plugin-installer` runs exactly this check
 before installing, and refuses to proceed if it fails.
+
+Releases after 0.8.3 also carry signed build provenance, which proves the zip
+was built by this repo's release workflow from the tagged commit:
+
+```bash
+gh attestation verify calibre-bridge-vX.Y.Z.zip --repo vavallee/bindery-plugins
+```
 
 ## Quick start
 

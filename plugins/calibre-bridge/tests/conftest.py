@@ -5,6 +5,7 @@ shadow anything declared here, so this file only introduces new names and
 leaves the existing modules untouched.
 """
 
+import ast
 import importlib
 import json
 import pathlib
@@ -20,6 +21,25 @@ from unittest.mock import MagicMock
 import pytest
 
 _PLUGIN_DIR = pathlib.Path(__file__).resolve().parent.parent / "plugin"
+
+
+def _declared_version() -> str:
+    """The version tuple on the plugin class, read without importing it.
+
+    Parsed here rather than taken from ``handlers.PLUGIN_VERSION`` so the
+    tests compare what the bridge reports with what the release declares, and
+    not with itself.
+    """
+    tree = ast.parse((_PLUGIN_DIR.parent / "__init__.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "version" for target in node.targets
+        ):
+            return ".".join(str(part) for part in ast.literal_eval(node.value))
+    raise RuntimeError("no version tuple in the plugin __init__.py")
+
+
+PLUGIN_VERSION = _declared_version()
 
 
 class StubMetadata:

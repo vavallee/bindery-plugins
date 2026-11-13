@@ -11,6 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from .conftest import PLUGIN_VERSION
+
 EXPECTED_CAPABILITIES = {
     "book_metadata",
     "cover",
@@ -88,7 +90,7 @@ def test_health_advertises_0_6_capabilities(bridge_handlers, serve_bridge):
     status, payload, _ = bridge.call("GET", "/v1/health")
     assert status == 200
     assert EXPECTED_CAPABILITIES.issubset(set(payload["capabilities"]))
-    assert payload["plugin_version"] == "0.8.3"
+    assert payload["plugin_version"] == PLUGIN_VERSION
 
 
 # ── error codes ───────────────────────────────────────────────────────────────

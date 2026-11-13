@@ -9,6 +9,9 @@ spec:
         elements:
           - cluster: homelab
             namespace: default
+            # The release to install. It moves together with targetRevision
+            # below, in the chart PR that follows each release:
+            # python scripts/bump_chart.py X.Y.Z
             pluginVersion: "0.8.3"
   template:
     metadata:
@@ -17,7 +20,8 @@ spec:
       project: default
       source:
         repoURL: https://github.com/vavallee/bindery-plugins
-        targetRevision: development
+        # The chart as of that release tag. Moves with pluginVersion above.
+        targetRevision: v-calibre-bridge-0.8.3
         path: charts/calibre-plugin-installer
         helm:
           releaseName: calibre-plugin-installer

@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from .conftest import PLUGIN_VERSION
 from .test_bridge_0_6_3 import _cleanup_genesis, _FakeDispatcher, _genesis
 from .test_config import _cleanup_action, _load_init_module, _make_action_stubs
 from .test_dedupe_ladder import FakeDB, FakeMetadata, _book
@@ -308,7 +309,7 @@ def test_health_advertises_add_format(bridge_handlers, serve_bridge):
     status, payload, _ = bridge.call("GET", "/v1/health")
     assert status == 200
     assert "add_format" in payload["capabilities"]
-    assert payload["plugin_version"] == "0.8.3"
+    assert payload["plugin_version"] == PLUGIN_VERSION
 
 
 # ── GUI refresh: an existing row is redrawn, not inserted ────────────────────

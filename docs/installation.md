@@ -22,6 +22,9 @@ registry entry, and `calibre-customize -a` is the supported way to do it.
    curl -sSLO https://github.com/vavallee/bindery-plugins/releases/download/v-calibre-bridge-X.Y.Z/calibre-bridge-vX.Y.Z.zip.sha256
    sha256sum -c calibre-bridge-vX.Y.Z.zip.sha256
    ```
+   Releases after 0.8.3 also carry signed build provenance. With the GitHub
+   CLI, `gh attestation verify calibre-bridge-vX.Y.Z.zip --repo vavallee/bindery-plugins`
+   confirms the zip was built by this repo's release workflow.
 3. In Calibre: **Preferences, Plugins, Load plugin from file** and select the
    `.zip`.
 4. Restart Calibre.
@@ -168,7 +171,10 @@ Set `calibreImage` to the image your Calibre `Deployment` already runs.
 1. Copy `argocd/application.yaml` into your homelab GitOps repo.
 2. Adjust `spec.source.repoURL`, `spec.destination`, and the values to point at
    your environment. The important keys are:
-   - `pluginVersion`: the plugin release to install, for example `"0.8.3"`
+   - `pluginVersion`: the plugin release to install, written `"X.Y.Z"`
+     without the tag prefix. The file ships pinned to a published release.
+   - `spec.source.targetRevision`: the release tag the chart is read from,
+     `v-calibre-bridge-X.Y.Z`. Keep it on the same release as `pluginVersion`.
    - `pluginName`: the plugin's registered name, `"Bindery Bridge"`. It has to
      match the `name` attribute in `plugins/calibre-bridge/__init__.py`,
      because that is the key Calibre stores in its registry.
@@ -187,8 +193,9 @@ Set `calibreImage` to the image your Calibre `Deployment` already runs.
 ### Upgrades
 
 Bump `pluginVersion` in the chart's `values.yaml` or in the ApplicationSet
-override, merge, and let ArgoCD sync. The init containers re-download and
-re-register the matching `.zip` on the next Calibre pod restart.
+override (and `targetRevision` beside it), merge, and let ArgoCD sync. The
+init containers re-download and re-register the matching `.zip` on the next
+Calibre pod restart.
 
 ### Restricting who can reach the bridge
 

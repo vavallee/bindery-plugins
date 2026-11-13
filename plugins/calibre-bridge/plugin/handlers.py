@@ -7,7 +7,36 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-PLUGIN_VERSION = "0.8.3"
+
+def _plugin_version() -> str:
+    """The plugin version, read from the one place it is written.
+
+    ``version = (X, Y, Z)`` on the plugin class in the top level
+    ``__init__.py`` is what Calibre itself reads, so nothing else spells the
+    number out. Inside Calibre that file is the ``calibre_plugins.bindery_bridge``
+    package, which Calibre imports before it loads anything under ``plugin/``.
+    The test suite loads this file by path with that package stubbed or absent,
+    so there the same file is parsed from disk, one directory up.
+    """
+    try:
+        from calibre_plugins.bindery_bridge import BinderyBridge
+
+        version = BinderyBridge.version
+    except ImportError:
+        import ast
+        import pathlib
+
+        init_file = pathlib.Path(__file__).resolve().parent.parent / "__init__.py"
+        match = re.search(
+            r"^[ \t]+version\s*=\s*(\([^)]*\))", init_file.read_text(encoding="utf-8"), re.M
+        )
+        if match is None:
+            raise RuntimeError(f"no version tuple in {init_file}") from None
+        version = ast.literal_eval(match.group(1))
+    return ".".join(str(part) for part in version)
+
+
+PLUGIN_VERSION = _plugin_version()
 
 # Optional protocol features. A client that understands none of them still
 # works: everything 0.6.0 adds is a new endpoint, a new response field or a

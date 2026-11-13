@@ -5,8 +5,10 @@ description: >-
   Bindery Bridge plugin .zip from GitHub Releases into Calibre's persistent
   plugins directory before startup.
 type: application
-version: 0.2.6
-appVersion: "0.2.0"
+version: 0.2.7
+# The plugin release this chart installs by default. Same number as
+# pluginVersion in values.yaml; scripts/bump_chart.py sets both.
+appVersion: "0.8.3"
 keywords:
   - calibre
   - bindery
