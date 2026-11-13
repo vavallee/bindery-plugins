@@ -9,6 +9,25 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ### [Unreleased]
 
+#### Changed
+
+- **Hardening of the push server.** A bridge with no API key now answers only
+  requests whose `Host` is a loopback name, and no request that carries an
+  `Origin` header is served, key or no key. `Content-Type: application/json` is
+  required on `POST /v1/books` and `PATCH /v1/books/{id}`.
+- **Short keys on a network bind.** A key under 16 characters is no longer
+  accepted when the bind host is not loopback. An existing install with such a
+  key serves the health only page after upgrading until you press Generate and
+  update the key in Bindery.
+- **Failed key attempts are throttled.** Five wrong tokens from one address
+  within a minute block that address for a minute with `429` and `Retry-After`,
+  including for a correct key. Fix a stale key in Bindery to clear it.
+- **Request limits.** The request line and headers have 10 seconds in total and
+  a size cap, a body has a total deadline, and at most 32 connections are served
+  at once (more get `503`).
+- **Settings file mode.** The file that holds the API key is set to owner read
+  and write only after every save, where the platform supports it.
+
 ### [0.8.3] - 2026-11-12
 
 #### Fixed

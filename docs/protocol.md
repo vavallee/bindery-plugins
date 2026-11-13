@@ -37,8 +37,10 @@ port, so the cause is visible rather than showing up as connection refused.
 See [Degraded mode](#degraded-mode).
 
 A bind that is not loopback also needs a key of at least 16 characters, or the
-server refuses to start the same way. The settings window's **Generate** button
-makes a 64 character key.
+server refuses to start the same way. That includes an existing shorter key from
+an earlier version: after an upgrade the bridge serves the degraded health page
+until the key is replaced. The settings window's **Generate** button makes a 64
+character key.
 
 Requests the server refuses before it looks at a credential or a body:
 
@@ -46,21 +48,33 @@ Requests the server refuses before it looks at a credential or a body:
   a key is set. Bindery never sends `Origin`; browsers always do on a cross
   origin request.
 - With no `api_key`, the host part of the `Host` header must be `localhost`,
-  a `127.0.0.0/8` address or `[::1]`, else `403 forbidden`. A client that
+  a `127.0.0.0/8` address or `[::1]`, with an optional numeric port, else
+  `403 forbidden`. The header is parsed strictly, so userinfo, spaces and a
+  port that is not a number are refused. A client that
   reaches a keyless bridge through another name (a reverse proxy, a tunnel) has
   to set a key. With a key set, `Host` is not restricted.
-- `POST /v1/books` needs `Content-Type: application/json`, else
-  `415 unsupported_media_type`.
+- `POST /v1/books` and `PATCH /v1/books/{id}` need
+  `Content-Type: application/json`, else `415 unsupported_media_type`.
+- A request with more than one `Host` header gets `400`, and one whose request
+  line and headers exceed 16 KiB or 64 header lines gets `431`.
 
 Failed bearer attempts are counted per client address. Five failures within a
 minute block that address for a minute: every request from it, a correct key
 included, gets `429 rate_limited` with `Retry-After`. Other addresses are not
 affected. A missing token on `GET /v1/health` does not count.
 
-Each connection has 10 seconds to send its request line and headers, then 30
-seconds of idle time per read of the body (with a total allowance that grows
-with `Content-Length`). At most 32 connections are served at once; a new one
-over the cap gets `503` with `Connection: close`.
+The block covers the whole address, a correct key included. Behind NAT or on a
+Docker bridge several clients share an address, so one of them can lock the
+others out for a minute, and a Bindery holding a stale key locks itself out
+because its health probes with a wrong token count. The operator sees `429`
+with `Retry-After`. Correcting the key is the fix; the block lifts by itself
+after a minute. IPv6 peers are tracked by their /64 prefix.
+
+Each connection has 10 seconds in total to send its request line and headers,
+a hard deadline that a slow trickle does not extend. A body then has 30 seconds
+plus one second per MiB of `Content-Length` in total (94 seconds at the 64 MiB
+size cap), and 30 seconds of idle time per read. At most 32 connections are
+served at once; a new one over the cap gets `503` with `Connection: close`.
 
 `GET /v1/health` is always unauthenticated so clients can probe readiness
 without provisioning credentials, and it never answers `401`. It reports the
@@ -102,7 +116,7 @@ branching on the status alone.
 |---|---|---|
 | `unauthorized` | 401 | Bearer token missing or does not match |
 | `forbidden` | 403 | The request carries an `Origin` header, or there is no `api_key` and `Host` is not a loopback name. Unreleased |
-| `unsupported_media_type` | 415 | `POST /v1/books` without `Content-Type: application/json`. Unreleased |
+| `unsupported_media_type` | 415 | `POST /v1/books` or `PATCH /v1/books/{id}` without `Content-Type: application/json`. Unreleased |
 | `rate_limited` | 429 | Too many failed bearer attempts from this address; see `Retry-After`. Unreleased |
 | `db_unavailable` | 503 | Library is mid swap, no database right now |
 | `invalid_json` | 400 | Body is not JSON (including nested too deeply), or `Content-Length` is not a number. A body that stalls is answered `408` with this code |

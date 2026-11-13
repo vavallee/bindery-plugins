@@ -8,6 +8,7 @@ from calibre_plugins.bindery_bridge.plugin import status
 from calibre_plugins.bindery_bridge.plugin.handlers import (
     DEFAULT_BODY_TIMEOUT,
     DEFAULT_HEADER_TIMEOUT,
+    SERVER_NAME,
     make_degraded_handler,
     make_handler,
 )
@@ -27,7 +28,7 @@ DEFAULT_MAX_CONNECTIONS = 32
 _BUSY_BODY = b'{"error": "too many connections", "code": "busy"}'
 _BUSY_RESPONSE = (
     b"HTTP/1.0 503 Service Unavailable\r\n"
-    b"Server: bindery-bridge\r\n"
+    b"Server: " + SERVER_NAME.encode() + b"\r\n"
     b"Content-Type: application/json\r\n"
     b"Retry-After: 2\r\n"
     b"Connection: close\r\n"

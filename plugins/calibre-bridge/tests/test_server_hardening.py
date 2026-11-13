@@ -1,8 +1,10 @@
 """Server hardening: connection limits, keyless mode, key strength and throttling."""
 
+import contextlib
 import http.client
 import importlib
 import json
+import select
 import socket
 import sys
 import threading
@@ -12,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from .conftest import _PLUGIN_DIR, free_port
+from .conftest import _PLUGIN_DIR, PLUGIN_VERSION, free_port
 
 KEY = "k" * 32
 
@@ -296,7 +298,32 @@ def test_with_a_key_a_non_loopback_host_is_fine(make_bridge):
         ("128.0.0.1", False),
         ("[::2]:80", False),
         ("[::1", False),
-        ("::1", True),
+        # Parsed strictly: userinfo, junk ports, spaces, unbracketed IPv6 and
+        # a second port or host are all refused.
+        ("::1", False),
+        ("127.0.0.1:80@evil.com", False),
+        ("localhost:x@evil.com", False),
+        ("localhost:x", False),
+        ("localhost:", False),
+        ("localhost:0", False),
+        ("localhost:65536", False),
+        ("localhost:65535", True),
+        ("localhost:8099:1", False),
+        ("localhost.", True),
+        ("localhost..", False),
+        ("user@localhost", False),
+        ("localhost evil.com", False),
+        ("local host", False),
+        ("localhost/x", False),
+        ("localhost\\x", False),
+        ("127.0.0.1 ", True),
+        ("127.1", False),
+        ("[127.0.0.1]", False),
+        ("[::1]x", False),
+        ("[::1]:x", False),
+        ("[::1]@evil.com", False),
+        ("[::1%eth0]", False),
+        ("localhost:\u0663", False),
     ],
 )
 def test_host_is_loopback(bridge_handlers, host, expected):
@@ -453,15 +480,15 @@ def test_the_key_is_never_logged_on_failure(make_bridge, caplog):
 # ── small hardenings ──────────────────────────────────────────────────────────
 
 
-def test_server_header_is_a_fixed_name(make_bridge, server_module, tmp_path):
+def test_server_header_names_the_plugin_and_nothing_else(make_bridge, server_module, tmp_path):
     bridge = make_bridge("")
     for path in ("/v1/health", "/nowhere"):
-        assert _request(bridge.port, "GET", path)[2]["Server"] == "bindery-bridge"
+        assert _request(bridge.port, "GET", path)[2]["Server"] == f"BinderyBridge/{PLUGIN_VERSION}"
     srv = server_module.BridgeServer()
     port = free_port()
     srv.start_degraded(port, "127.0.0.1", "why")
     try:
-        assert _request(port, "GET", "/v1/health")[2]["Server"] == "bindery-bridge"
+        assert _request(port, "GET", "/v1/health")[2]["Server"] == f"BinderyBridge/{PLUGIN_VERSION}"
     finally:
         srv.stop()
 
@@ -479,6 +506,252 @@ def test_deeply_nested_json_gets_a_400_not_a_dropped_connection(make_bridge):
         assert status == 400
         assert payload["code"] == "invalid_json"
     status, payload, _ = _request(
-        bridge.port, "PATCH", "/v1/books/1", body=b"[" * 200000, headers=_bearer()
+        bridge.port,
+        "PATCH",
+        "/v1/books/1",
+        body=b"[" * 200000,
+        headers={**_bearer(), "Content-Type": "application/json"},
     )
     assert status == 400
+
+
+# ── slow clients cannot hold the connection slots ─────────────────────────────
+
+
+def _read_reply(sock, limit=5.0):
+    sock.settimeout(limit)
+    reply = b""
+    try:
+        while chunk := sock.recv(65536):
+            reply += chunk
+    except (TimeoutError, OSError):
+        pass
+    return reply
+
+
+def test_header_trickle_cannot_hold_every_slot(server_module, tmp_path):
+    """One byte at a time resets a per recv timeout for ever; the total deadline cuts it."""
+    cap = 6
+    timeout = 1.0
+    srv = server_module.BridgeServer(max_connections=cap)
+    port = free_port()
+    srv.start(port, "127.0.0.1", "", lambda: _db(tmp_path), header_timeout=timeout)
+    crawlers = [socket.create_connection(("127.0.0.1", port)) for _ in range(cap)]
+    try:
+        assert _wait_for(lambda: _handler_threads() == cap)
+        started = time.monotonic()
+        request = b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: " + b"a" * 4000
+        status = None
+        sent = 0
+        while time.monotonic() - started < timeout + 3:
+            for c in crawlers:
+                with contextlib.suppress(OSError):
+                    c.sendall(request[sent : sent + 1])
+            sent += 1
+            time.sleep(0.2)
+            if time.monotonic() - started > timeout + 0.5:
+                status = _request(port, "GET", "/v1/health", timeout=2)[0]
+                if status == 200:
+                    break
+        # Served while the crawlers are still sending, not after they leave.
+        assert status == 200
+        assert time.monotonic() - started < timeout + 2.5
+        assert sent < len(request)
+    finally:
+        for c in crawlers:
+            c.close()
+        srv.stop()
+
+
+def test_body_trickle_is_cut_off_at_the_deadline(server_module, tmp_path):
+    """A buffered 64 KiB read used to wait for the whole chunk, one byte per recv."""
+    body_timeout = 1.0
+    srv = server_module.BridgeServer()
+    port = free_port()
+    srv.start(
+        port, "127.0.0.1", KEY, lambda: _db(tmp_path), header_timeout=5, body_timeout=body_timeout
+    )
+    try:
+        s = socket.create_connection(("127.0.0.1", port))
+        s.sendall(
+            (
+                "POST /v1/books HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                f"Authorization: Bearer {KEY}\r\nContent-Type: application/json\r\n"
+                "Content-Length: 65536\r\n\r\n"
+            ).encode()
+        )
+        started = time.monotonic()
+        reply = b""
+        while time.monotonic() - started < 10:
+            s.sendall(b" ")
+            readable, _, _ = select.select([s], [], [], 0.2)
+            if readable:
+                reply = s.recv(65536)
+                break
+        elapsed = time.monotonic() - started
+        s.close()
+        assert reply.startswith(b"HTTP/1.0 408"), reply[:60]
+        # Hard total: body_timeout plus the rate allowance for 64 KiB, with slack.
+        assert body_timeout <= elapsed < body_timeout + 1.0
+    finally:
+        srv.stop()
+
+
+def test_a_slow_request_on_one_connection_does_not_outlive_its_handler(server_module, tmp_path):
+    """Nothing is left running per connection once the deadline has fired."""
+    srv = server_module.BridgeServer()
+    port = free_port()
+    srv.start(port, "127.0.0.1", "", lambda: _db(tmp_path), header_timeout=0.5)
+    try:
+        before = threading.active_count()
+        for _ in range(5):
+            s = socket.create_connection(("127.0.0.1", port))
+            s.sendall(b"GET /v1/")
+            assert _read_reply(s, 3) == b""
+            s.close()
+        assert _wait_for(lambda: threading.active_count() <= before)
+        status, _, _ = _request(port, "GET", "/v1/health")
+        assert status == 200
+    finally:
+        srv.stop()
+
+
+def _raw_exchange(port, data):
+    s = socket.create_connection(("127.0.0.1", port))
+    try:
+        s.sendall(data)
+        return _read_reply(s)
+    finally:
+        s.close()
+
+
+def test_oversized_headers_are_refused_with_431(make_bridge, bridge_handlers):
+    bridge = make_bridge("")
+    big = bridge_handlers.MAX_HEAD_BYTES
+    # Many ordinary lines past the byte cap.
+    lines = b"".join(b"X-%d: %s\r\n" % (i, b"v" * 200) for i in range(big // 100))
+    reply = _raw_exchange(
+        bridge.port, b"GET /v1/health HTTP/1.0\r\nHost: 127.0.0.1\r\n" + lines + b"\r\n"
+    )
+    assert reply.startswith(b"HTTP/1.0 431"), reply[:40]
+    # A request line past the cap.
+    reply = _raw_exchange(
+        bridge.port, b"GET /" + b"a" * (big + 10) + b" HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n"
+    )
+    assert reply.startswith(b"HTTP/1.0 431"), reply[:40]
+    # More header lines than the count cap, each small.
+    many = b"".join(b"X-%d: v\r\n" % i for i in range(bridge_handlers.MAX_HEADERS + 5))
+    reply = _raw_exchange(
+        bridge.port, b"GET /v1/health HTTP/1.0\r\nHost: 127.0.0.1\r\n" + many + b"\r\n"
+    )
+    assert reply.startswith(b"HTTP/1.0 431"), reply[:40]
+    # The server is fine afterwards, and a normal request still works.
+    assert _request(bridge.port, "GET", "/v1/health")[0] == 200
+
+
+def test_a_body_larger_than_the_header_cap_is_not_counted_against_it(make_bridge, bridge_handlers):
+    bridge = make_bridge(KEY)
+    body = json.dumps(
+        {"path": "/nowhere/x.epub", "pad": "x" * (bridge_handlers.MAX_HEAD_BYTES * 2)}
+    )
+    status, payload, _ = _request(
+        bridge.port,
+        "POST",
+        "/v1/books",
+        body=body,
+        headers={**_bearer(), "Content-Type": "application/json"},
+    )
+    assert status == 400
+    assert payload["code"] == "path_not_found"
+
+
+@pytest.mark.parametrize("key", ["", KEY])
+def test_a_second_host_header_is_refused(make_bridge, key):
+    bridge = make_bridge(key)
+    extra = f"Authorization: Bearer {key}\r\n" if key else ""
+    reply = _raw_exchange(
+        bridge.port,
+        f"GET /v1/health HTTP/1.0\r\nHost: 127.0.0.1\r\nHost: evil.example\r\n{extra}\r\n".encode(),
+    )
+    assert reply.startswith(b"HTTP/1.0 400"), reply[:40]
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:80@evil.com", "localhost:x@evil.com", "a b"])
+def test_keyless_with_a_malformed_host_is_refused(make_bridge, host):
+    bridge = make_bridge("")
+    reply = _raw_exchange(bridge.port, f"GET /v1/health HTTP/1.0\r\nHost: {host}\r\n\r\n".encode())
+    assert reply.startswith(b"HTTP/1.0 403"), reply[:40]
+
+
+@pytest.mark.parametrize("key", ["", KEY])
+def test_patch_requires_a_json_content_type(make_bridge, key):
+    bridge = make_bridge(key)
+    base = _bearer(key) if key else {}
+    for content_type in ("text/plain", "application/x-www-form-urlencoded", None):
+        headers = dict(base)
+        if content_type:
+            headers["Content-Type"] = content_type
+        status, payload, _ = _request(
+            bridge.port, "PATCH", "/v1/books/1", body="{}", headers=headers
+        )
+        assert status == 415, content_type
+        assert payload["code"] == "unsupported_media_type"
+    status, _, _ = _request(
+        bridge.port,
+        "PATCH",
+        "/v1/books/1",
+        body="[]",
+        headers={**base, "Content-Type": "application/json"},
+    )
+    assert status == 400
+
+
+# ── throttle table limits ─────────────────────────────────────────────────────
+
+
+def _trip(throttle, addr):
+    for _ in range(3):
+        throttle.record_failure(addr)
+    assert throttle.retry_after(addr) > 0
+
+
+def test_throttle_keys_an_ipv6_peer_by_its_64(bridge_handlers):
+    clock = _Clock()
+    throttle = bridge_handlers._FailureThrottle(limit=3, window=10, clock=clock, max_entries=8)
+    for i in range(3):
+        throttle.record_failure(f"2001:db8:1:2::{i:x}")
+    assert throttle.retry_after("2001:db8:1:2:ffff:ffff:ffff:ffff") > 0
+    assert throttle.retry_after("2001:db8:1:3::1") == 0
+    assert len(throttle._entries) == 1
+    # An IPv4 mapped address is the IPv4 address, and a zone id is ignored.
+    throttle.record_failure("::ffff:10.0.0.9")
+    assert throttle.retry_after("10.0.0.9") == 0
+    _trip(throttle, "10.0.0.9")
+    assert throttle.retry_after("::ffff:10.0.0.9") > 0
+    assert throttle.retry_after("fe80::1%eth0") == throttle.retry_after("fe80::2")
+
+
+def test_a_flood_of_other_addresses_does_not_release_a_block(bridge_handlers):
+    clock = _Clock()
+    throttle = bridge_handlers._FailureThrottle(limit=3, window=10, clock=clock, max_entries=8)
+    _trip(throttle, "10.9.9.9")
+    for i in range(200):
+        clock.now += 0.01
+        throttle.record_failure(f"10.0.0.{i}")
+    assert throttle.retry_after("10.9.9.9") > 0
+    assert len(throttle._entries) <= 8
+
+
+def test_when_every_entry_is_blocked_a_new_address_is_not_tracked(bridge_handlers):
+    clock = _Clock()
+    throttle = bridge_handlers._FailureThrottle(limit=3, window=10, clock=clock, max_entries=4)
+    for i in range(4):
+        _trip(throttle, f"10.0.0.{i}")
+    assert throttle.record_failure("10.1.1.1") is False
+    assert throttle.retry_after("10.1.1.1") == 0
+    assert len(throttle._entries) == 4
+    assert all(throttle.retry_after(f"10.0.0.{i}") > 0 for i in range(4))
+    # Once the blocks have expired the table makes room again.
+    clock.now += 11
+    throttle.record_failure("10.1.1.1")
+    assert "10.1.1.1" in throttle._entries

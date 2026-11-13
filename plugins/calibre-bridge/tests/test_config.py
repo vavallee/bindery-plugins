@@ -255,13 +255,98 @@ def test_a_failed_chmod_never_breaks_saving(tmp_path):
         saved = _FilePrefs(str(path))
         with (
             patch.object(config, "prefs", saved),
-            patch.object(config.os, "chmod", side_effect=PermissionError("no")),
+            patch.object(config.os, "fchmod", side_effect=PermissionError("no")),
         ):
             config.ConfigWidget.commit(_widget_with_key("k" * 32))
         assert saved["api_key"] == "k" * 32
         # No file on disk at all is also fine.
         with patch.object(config, "prefs", _FilePrefs(str(tmp_path / "absent.json"))):
             config.ConfigWidget.commit(_widget_with_key("k" * 32))
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_save_value_restricts_the_settings_file(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+
+        class _Rewriting(_FilePrefs):
+            """Like Calibre, every write puts a 0644 file back."""
+
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                with open(self.file_path, "w") as fh:
+                    fh.write("{}")
+                os.chmod(self.file_path, 0o644)
+
+        saved = _Rewriting(str(path))
+        with patch.object(config, "prefs", saved):
+            config.save_value("pull_library_id", "lib-1")
+        assert saved["pull_library_id"] == "lib-1"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_a_symlinked_settings_file_is_not_followed(tmp_path, caplog):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        target = tmp_path / "elsewhere.json"
+        target.write_text("{}")
+        target.chmod(0o644)
+        link = tmp_path / "bindery_bridge.json"
+        link.symlink_to(target)
+        caplog.set_level(logging.DEBUG)
+        with patch.object(config, "prefs", _FilePrefs(str(link))):
+            config.load_config()
+            config.save_value("pull_library_id", "x")
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        assert link.is_symlink()
+        assert "settings file mode left as is" in caplog.text
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_a_directory_or_missing_path_is_left_alone(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        folder = tmp_path / "bindery_bridge.json"
+        folder.mkdir()
+        folder.chmod(0o755)
+        with patch.object(config, "prefs", _FilePrefs(str(folder))):
+            config.load_config()
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o755
+        with patch.object(config, "prefs", _FilePrefs(str(tmp_path / "absent.json"))):
+            config.save_value("k", "v")
+        with patch.object(config, "prefs", _FilePrefs(None)):
+            config.load_config()
+    finally:
+        _cleanup(stubs)
+
+
+def test_restricting_the_mode_is_a_no_op_off_posix(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        with (
+            patch.object(config, "prefs", _FilePrefs(str(path))),
+            patch.object(config.os, "name", "nt"),
+            patch.object(config.os, "open", side_effect=AssertionError("must not open")),
+        ):
+            config.load_config()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
     finally:
         _cleanup(stubs)
 

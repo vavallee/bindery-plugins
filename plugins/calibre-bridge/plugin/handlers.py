@@ -1,9 +1,13 @@
+import contextlib
 import hmac
+import http.client
+import io
 import ipaddress
 import json
 import logging
 import math
 import re
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -102,16 +106,25 @@ RETRY_AFTER_SECONDS = 2
 
 _BOOK_ID_PATH = re.compile(r"^/v1/books/(?P<book_id>[^/]+)$")
 
-# The Server header carries a fixed name, not the Python and BaseHTTP versions.
-SERVER_NAME = "bindery-bridge"
+# The Server header names the plugin and its version, not the Python and
+# BaseHTTP versions.
+SERVER_NAME = "BinderyBridge/" + PLUGIN_VERSION
 
-# Seconds a connection may take to send its request line and headers, and then
-# the longest it may sit idle while the body arrives. The body also has a total
-# deadline (see _read_json_body) so a trickle cannot hold a thread for ever.
+# Seconds a connection has in total to send its request line and headers (a
+# hard deadline, not a per read timeout, so a byte a second cannot keep it
+# open), and the longest it may sit idle between reads while the body arrives.
+# The body has its own hard deadline, see _read_body.
 DEFAULT_HEADER_TIMEOUT = 10.0
 DEFAULT_BODY_TIMEOUT = 30.0
 # Slowest sustained body upload the total deadline allows for, in bytes/second.
-BODY_MIN_RATE = 32 * 1024
+# A body may take body_timeout plus length / BODY_MIN_RATE seconds in all, so
+# at the 64 MiB default size cap a connection is held for 94 seconds at most.
+# Bindery's own bodies are a few hundred bytes.
+BODY_MIN_RATE = 1024 * 1024
+# Most bytes and header lines a request line plus headers may take. Bindery
+# sends well under 1 KiB and a reverse proxy adds a few lines.
+MAX_HEAD_BYTES = 16 * 1024
+MAX_HEADERS = 64
 
 # Failed credential attempts per client address: this many inside the window
 # earns a block of the same length.
@@ -155,30 +168,34 @@ def _tokens_match(presented: str, expected: str) -> bool:
     return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
 
 
-def _host_is_loopback(host_header: str) -> bool:
-    """True when the host part of a Host header names this machine.
+_HOST_PORT = re.compile(r"(?P<host>[^\s:@/\\\[\]]+)(?::(?P<port>[0-9]{1,5}))?")
+_HOST_PORT_V6 = re.compile(r"\[(?P<host>[0-9a-f:.]+)\](?::(?P<port>[0-9]{1,5}))?")
 
-    Accepts ``localhost``, any 127.0.0.0/8 literal and ``[::1]``, with or
-    without a port. Anything else, including a missing header, is False.
+
+def _host_is_loopback(host_header: str) -> bool:
+    """True when a Host header names this machine and is well formed.
+
+    Accepts ``localhost``, any 127.0.0.0/8 literal and ``[::1]``, each with an
+    optional numeric port from 1 to 65535. The header is parsed whole: userinfo,
+    spaces, a port that is not a number and anything else that is not
+    ``host``, ``host:port`` or ``[v6]:port`` is refused, as is a missing header.
     """
-    host = host_header.strip().lower()
-    if not host:
+    text = host_header.strip().lower()
+    match = _HOST_PORT_V6.fullmatch(text) if text.startswith("[") else _HOST_PORT.fullmatch(text)
+    if match is None:
         return False
-    if host.startswith("["):
-        end = host.find("]")
-        if end < 0:
-            return False
-        host = host[1:end]
-    elif host.count(":") == 1:
-        host = host.split(":", 1)[0]
-    if host.rstrip(".") == "localhost":
+    port = match.group("port")
+    if port is not None and not 1 <= int(port) <= 65535:
+        return False
+    host = match.group("host")
+    if host in ("localhost", "localhost.") and not text.startswith("["):
         return True
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
     if ip.version == 4:
-        return ip in ipaddress.ip_network("127.0.0.0/8")
+        return not text.startswith("[") and ip in ipaddress.ip_network("127.0.0.0/8")
     return ip == ipaddress.ip_address("::1")
 
 
@@ -186,12 +203,33 @@ def _is_json_content_type(value: str) -> bool:
     return value.split(";", 1)[0].strip().lower() == "application/json"
 
 
+def _throttle_key(addr: str) -> str:
+    """The table key for a client address.
+
+    An IPv6 peer is keyed by its /64, since one host usually holds a whole
+    prefix and could otherwise rotate addresses, and an IPv4 mapped IPv6
+    address is keyed as the IPv4 address it carries.
+    """
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return addr
+    if ip.version == 6:
+        mapped = ip.ipv4_mapped
+        if mapped is not None:
+            return str(mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
+
+
 class _FailureThrottle:
     """Per client address counter of failed credential attempts.
 
     ``limit`` failures inside ``window`` seconds block the address for
-    ``window`` seconds. Memory is bounded: expired entries are dropped when the
-    table fills, and past ``max_entries`` the oldest entry goes.
+    ``window`` seconds. Memory is bounded. When the table is full, expired
+    entries go first, then the oldest entry that is not blocked. If every entry
+    is a live block the new address is not tracked at all, so a flood of other
+    addresses can never release a block early.
     """
 
     def __init__(
@@ -206,13 +244,13 @@ class _FailureThrottle:
         self._clock = clock
         self._max = max_entries
         self._lock = threading.Lock()
-        # address -> [window start, failures in window, blocked until]
+        # key -> [window start, failures in window, blocked until]
         self._entries: dict[str, list[float]] = {}
 
     def retry_after(self, addr: str) -> int:
         """Whole seconds until ``addr`` may try again; 0 when it is not blocked."""
         with self._lock:
-            entry = self._entries.get(addr)
+            entry = self._entries.get(_throttle_key(addr))
             if entry is None:
                 return 0
             remaining = entry[2] - self._clock()
@@ -220,37 +258,149 @@ class _FailureThrottle:
 
     def record_failure(self, addr: str) -> bool:
         """Count one failure. True when this one tripped the block."""
+        key = _throttle_key(addr)
         with self._lock:
             now = self._clock()
-            entry = self._entries.get(addr)
+            entry = self._entries.get(key)
             if entry is None or (now - entry[0] >= self._window and now >= entry[2]):
-                if entry is None and len(self._entries) >= self._max:
-                    self._make_room(now)
+                if entry is None and len(self._entries) >= self._max and not self._make_room(now):
+                    return False
                 entry = [now, 0.0, 0.0]
-                self._entries[addr] = entry
+                self._entries[key] = entry
             entry[1] += 1
             if entry[1] >= self._limit and entry[2] <= now:
                 entry[2] = now + self._window
                 return True
             return False
 
-    def _make_room(self, now: float) -> None:
+    def _make_room(self, now: float) -> bool:
+        """Free one slot if that can be done without releasing a live block."""
         expired = [
             a for a, e in self._entries.items() if now >= e[2] and now - e[0] >= self._window
         ]
-        for addr in expired:
-            del self._entries[addr]
-        if len(self._entries) >= self._max:
-            oldest = min(self._entries, key=lambda a: self._entries[a][0])
-            del self._entries[oldest]
+        for key in expired:
+            del self._entries[key]
+        if len(self._entries) < self._max:
+            return True
+        unblocked = [a for a, e in self._entries.items() if e[2] <= now]
+        if not unblocked:
+            return False
+        del self._entries[min(unblocked, key=lambda a: self._entries[a][0])]
+        return True
+
+
+class _HeadTooLarge(http.client.HTTPException):
+    """The request line and headers are bigger than MAX_HEAD_BYTES."""
+
+
+class _DeadlineRaw(io.RawIOBase):
+    """Raw socket reader whose every read respects a hard deadline.
+
+    A socket timeout alone is per recv, so a client sending one byte a second
+    never trips it. Here each recv is given the smaller of the idle timeout and
+    the time left to the deadline, so the deadline bounds the whole read.
+    """
+
+    def __init__(self, sock: socket.socket, idle: float) -> None:
+        super().__init__()
+        self._sock = sock
+        self._idle = idle
+        self._deadline: float | None = None
+
+    def arm(self, total: float | None, idle: float) -> None:
+        self._idle = idle
+        self._deadline = None if total is None else time.monotonic() + total
+
+    def release(self, idle: float) -> None:
+        """Drop the deadline; reads, and writes on the socket, idle for ``idle``."""
+        self.arm(None, idle)
+        with contextlib.suppress(OSError):
+            self._sock.settimeout(idle)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        timeout = self._idle
+        if self._deadline is not None:
+            left = self._deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("read deadline passed")
+            timeout = min(timeout, left)
+        # A recv that idles past ``timeout`` raises TimeoutError itself.
+        self._sock.settimeout(timeout)
+        return self._sock.recv_into(b)
+
+
+class _RequestReader(io.BufferedReader):
+    """Buffered request reader with a deadline and a cap on header bytes."""
+
+    def __init__(self, sock: socket.socket, idle: float) -> None:
+        self._deadline_raw = _DeadlineRaw(sock, idle)
+        super().__init__(self._deadline_raw)
+        self._head_budget: int | None = None
+
+    def arm(self, total: float | None, idle: float, head_budget: int | None = None) -> None:
+        self._head_budget = head_budget
+        self._deadline_raw.arm(total, idle)
+
+    def disarm(self, idle: float) -> None:
+        """Drop the deadline and the byte cap; later reads idle for ``idle``."""
+        self._head_budget = None
+        self._deadline_raw.release(idle)
+
+    def readline(self, size: int | None = -1) -> bytes:
+        budget = self._head_budget
+        if budget is None:
+            return super().readline(size)
+        limit = budget + 1 if size is None or size < 0 else min(size, budget + 1)
+        line = super().readline(limit)
+        self._head_budget = budget - len(line)
+        if self._head_budget < 0:
+            raise _HeadTooLarge(f"request headers are larger than {MAX_HEAD_BYTES} bytes")
+        return line
 
 
 class _BridgeHandlerBase(BaseHTTPRequestHandler):
-    """Settings every bridge handler shares: read timeout and a fixed Server header."""
+    """Settings every bridge handler shares: deadlines, header limits, Server header."""
 
-    # Applied to the connection socket in StreamRequestHandler.setup, so it
-    # bounds each read of the request line and headers.
+    # Total seconds for the request line and headers, and the idle timeout of
+    # each read. Enforced by _RequestReader, not by the socket alone.
     timeout = DEFAULT_HEADER_TIMEOUT
+
+    rfile: _RequestReader  # type: ignore[assignment]
+
+    def setup(self) -> None:
+        super().setup()
+        self.rfile.close()
+        self.rfile = _RequestReader(self.connection, self.timeout)
+
+    def handle_one_request(self) -> None:
+        self.rfile.arm(self.timeout, self.timeout, head_budget=MAX_HEAD_BYTES)
+        try:
+            super().handle_one_request()
+        except _HeadTooLarge:
+            # Raised before the headers are parsed, so the request line is too big.
+            self.requestline = ""
+            self.request_version = ""
+            self.command = ""
+            self.send_error(431, "Request header too large")
+        finally:
+            self.rfile.disarm(self.timeout)
+
+    def parse_request(self) -> bool:
+        ok = super().parse_request()
+        # The headers are read: later reads (the body) set their own deadline.
+        self.rfile.disarm(self.timeout)
+        if not ok:
+            return False
+        if len(self.headers) > MAX_HEADERS:
+            self.send_error(431, "Too many headers")
+            return False
+        if len(self.headers.get_all("Host") or []) > 1:
+            self.send_error(400, "More than one Host header")
+            return False
+        return True
 
     def version_string(self) -> str:
         return SERVER_NAME
@@ -386,6 +536,15 @@ def make_handler(
                     int(AUTH_FAIL_WINDOW),
                 )
 
+        def _require_json_content_type(self) -> bool:
+            """Every method that reads a body wants JSON. Sends the 415 when not."""
+            if _is_json_content_type(self.headers.get("Content-Type", "")):
+                return True
+            self._send_error_json(
+                415, CODE_UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json"
+            )
+            return False
+
         def _read_json_body(self) -> tuple[Any, bool]:
             """Return ``(payload, ok)``. On failure the error has been sent."""
             try:
@@ -420,22 +579,17 @@ def make_handler(
             """Read ``length`` bytes, or raise TimeoutError.
 
             Each read may idle for ``body_timeout`` seconds, and the whole body
-            has ``body_timeout`` plus the time ``BODY_MIN_RATE`` would need, so a
-            large body on a slow link finishes while a trickle does not.
+            has ``body_timeout`` plus the time ``BODY_MIN_RATE`` would need, as a
+            hard deadline enforced inside every recv. A large body on a fast
+            link finishes, a trickle is cut off at the deadline.
             """
-            self.connection.settimeout(body_timeout)
-            deadline = time.monotonic() + body_timeout + length / BODY_MIN_RATE
-            chunks: list[bytes] = []
-            remaining = length
-            while remaining > 0:
-                if time.monotonic() > deadline:
-                    raise TimeoutError("body deadline passed")
-                chunk = self.rfile.read(min(remaining, 64 * 1024))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            return b"".join(chunks)
+            total = body_timeout + length / BODY_MIN_RATE
+            self.rfile.arm(total, body_timeout)
+            try:
+                data: bytes = self.rfile.read(length)
+            finally:
+                self.rfile.disarm(header_timeout)
+            return data
 
         def _send_path_error(self, exc: Exception) -> None:
             """Map an adder exception onto the error code it earned."""
@@ -524,10 +678,7 @@ def make_handler(
             if not self._check_auth():
                 self._send_unauthorized()
                 return
-            if not _is_json_content_type(self.headers.get("Content-Type", "")):
-                self._send_error_json(
-                    415, CODE_UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json"
-                )
+            if not self._require_json_content_type():
                 return
             db = get_db()
             if db is None:
@@ -616,6 +767,8 @@ def make_handler(
                 self._send_error_json(
                     404, CODE_NOT_FOUND, f"No such book: {match.group('book_id')!r}"
                 )
+                return
+            if not self._require_json_content_type():
                 return
             db = get_db()
             if db is None:

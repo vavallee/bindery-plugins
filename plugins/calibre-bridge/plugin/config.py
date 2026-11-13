@@ -1,5 +1,7 @@
 import contextlib
+import logging
 import os
+import stat
 from typing import Any
 
 from calibre.utils.config import JSONConfig
@@ -49,6 +51,8 @@ DEFAULTS = {
     "debug_log": False,
 }
 
+_log = logging.getLogger(__name__)
+
 # Longest debug log failure reason the Status line shows.
 MAX_PROBLEM_CHARS = 300
 
@@ -63,16 +67,34 @@ for k, v in DEFAULTS.items():
 def _restrict_file_mode() -> None:
     """Make the settings file readable by its owner only (it holds the api_key).
 
-    Calibre writes it 0644 inside its config directory. A failure here, or a
-    platform without POSIX modes, must never stop settings from loading or saving.
+    Calibre writes it 0644 inside its config directory, and rewrites it on
+    every save, so this runs after every write. A symlink is left alone, not
+    followed. A failure here, or a platform without POSIX modes, must never stop
+    settings from loading or saving.
     """
+    if os.name != "posix":
+        return
     try:
         path = getattr(prefs, "file_path", None)
-        if isinstance(path, str) and os.name == "posix" and os.path.exists(path):
-            os.chmod(path, 0o600)
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if not isinstance(path, str) or nofollow is None or not hasattr(os, "fchmod"):
+            return
+        try:
+            fd = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0))
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            # ELOOP when the path is a symlink; not ours to chmod.
+            _log.debug("settings file mode left as is (%s): %s", path, exc)
+            return
+        try:
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
     # Best effort only; the config directory is already private to the user.
-    except Exception:  # nosec B110
-        pass
+    except Exception as exc:  # nosec B110
+        _log.debug("could not restrict the settings file mode: %s", exc)
 
 
 def load_config() -> dict:
@@ -83,6 +105,7 @@ def load_config() -> dict:
 def save_value(key: str, value: object) -> None:
     """Persist one setting outside the dialog (the pull library id)."""
     prefs[key] = value
+    _restrict_file_mode()
 
 
 def _pull_status_summary() -> str:

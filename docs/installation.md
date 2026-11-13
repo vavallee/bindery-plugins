@@ -35,10 +35,23 @@ Press **Generate** for the API key. A fresh install has no key and a bind host
 of `0.0.0.0`, and the bridge does not listen like that: with no key on a
 network bind it refuses to start and serves a health only page that names the
 reason, so nothing can add books until you set a key. A key shorter than 16
-characters is refused on a network bind in the same way. Bind host `127.0.0.1`
+characters is refused on a network bind in the same way, including a short key
+that an earlier version accepted: after upgrading, such an install serves the
+health only page until you press **Generate** and update the key in Bindery.
+Bind host `127.0.0.1`
 may run with no key, which is for local use only (the bridge then also refuses
 requests that carry an `Origin` header or a non loopback `Host`), and setting a
 key is recommended even there.
+
+Failed keys are throttled per client address: five wrong or malformed bearer
+tokens within a minute block that address for a minute, and during the block
+every request from it gets `429` with a `Retry-After` header, even with the
+correct key. Behind NAT or on a Docker bridge many clients share one address,
+so any of them can lock the others out for a minute, and a Bindery holding a
+stale key locks itself out, because its health checks count too. What you see
+is `429` with `Retry-After` in the Calibre bridge log and in Bindery's
+Calibre status. The fix is to correct the key (Bindery Settings, Calibre, and
+the plugin's Customize window); the block then lifts on its own.
 
 This path requires zero infrastructure and matches Calibre's native plugin UX.
 The GUI file picker must be able to navigate to the zip file, which works on
