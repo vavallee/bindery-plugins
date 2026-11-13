@@ -100,10 +100,19 @@ them (#30).
 
 The `Calibre integration` workflow (`.github/workflows/calibre-integration.yml`)
 runs the built plugin zip inside a real Calibre, installed with Calibre's own
-Linux installer. It runs on every pull request and every push to `main`
-against the last 6.x, 7.x and 8.x releases and a pinned 9.x (the versions are
-listed in the workflow). A weekly run and a manual run add whatever Calibre
-released most recently; that leg reports a failure without failing the run.
+Linux installer. The installer checks the tarball against a SHA-512 it fetches
+from code.calibre-ebook.com, so what we trust is TLS to Calibre's hosts, not a
+signing key. The pinned Calibre versions are written once, in the workflow's
+`pinned` job matrix, and that job runs on every pull request, every push to
+`main`, the weekly schedule and a manual run. To add a Calibre line, add its
+newest release to that matrix. The steps themselves are in
+`.github/workflows/calibre-check.yml`.
+
+A separate `latest` job installs whatever Calibre released most recently. It
+runs on the weekly schedule and on a manual run only, never on a pull request.
+When the newest Calibre breaks the plugin, that job fails the scheduled run,
+and GitHub sends its standard failed workflow notification. Treat that as a
+finding about the plugin, not as noise.
 
 The scripts live in `plugins/calibre-bridge/tests/integration/`, which
 `build_plugin.py` keeps out of the release zip. There are two checks:

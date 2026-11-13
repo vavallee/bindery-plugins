@@ -4,6 +4,11 @@ name: Calibre integration
 # repository replaces Calibre with fakes, which is how a plugin that did not
 # start (#26) and one whose books did not show in the list (#30) both shipped
 # with a green build. See CONTRIBUTING.md, "Real Calibre checks".
+#
+# The steps live in calibre-check.yml, shared by both jobs below. It is a
+# reusable workflow rather than a composite action because it needs no extra
+# dependabot directory to keep its action SHAs current, the checkout stays in
+# one place, and its permissions can only narrow the `contents: read` set here.
 
 on:
   push:
@@ -12,7 +17,7 @@ on:
     # pull request is not visible to another.
     branches: [main]
   pull_request:
-    branches: [main, development]
+    branches: [main]
   schedule:
     # Weekly, Wednesday morning UTC.
     - cron: "23 5 * * 3"
@@ -26,95 +31,41 @@ on:
         required: false
         default: ""
 
+# Repeated pushes to a pull request replace the run in progress instead of
+# stacking cold cache runs. Other events are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
-  calibre:
+  pinned:
     name: calibre ${{ matrix.calibre }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # "latest" is whatever Calibre released most recently. It is there to give
-    # early warning of a Calibre change, so it reports without failing the run.
-    continue-on-error: ${{ matrix.calibre == 'latest' }}
     strategy:
       fail-fast: false
       matrix:
-        # The last release of each major line the plugin supports
-        # (minimum_calibre_version is 6.0.0) and a pinned 9.x, read from
-        # https://download.calibre-ebook.com/. Bump the 9.x pin by hand when a
-        # new Calibre is worth holding the plugin to. The unpinned "latest"
-        # leg is added only for the weekly schedule and a manual run, never
-        # for a pull request or a push.
-        calibre: >-
-          ${{ fromJSON(
-            (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-            && '["6.29.0", "7.26.0", "8.16.2", "9.18.0", "latest"]'
-            || '["6.29.0", "7.26.0", "8.16.2", "9.18.0"]'
-          ) }}
-    env:
-      CALIBRE_VERSION: ${{ matrix.calibre }}
-      PLUGIN_REF: ${{ inputs.plugin_ref }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        # The one place the pinned versions are written. To add a Calibre
+        # line, append its newest release from https://download.calibre-ebook.com/
+        # here; nothing else needs to change. The last release of each major
+        # line the plugin supports (minimum_calibre_version is 6.0.0) plus a
+        # pinned 9.x. Bump the 9.x pin by hand when a new Calibre is worth
+        # holding the plugin to.
+        calibre: ["6.29.0", "7.26.0", "8.16.2", "9.18.0"]
+    uses: ./.github/workflows/calibre-check.yml
+    with:
+      calibre: ${{ matrix.calibre }}
+      plugin_ref: ${{ inputs.plugin_ref }}
 
-      - name: Check out the plugin under test
-        if: env.PLUGIN_REF != ''
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ env.PLUGIN_REF }}
-          path: plugin-under-test
-
-      - name: Install the system libraries Calibre's Qt needs
-        # The three the Calibre installer checks for and refuses to run
-        # without. Everything else Calibre uses ships inside its own bundle.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libegl1 libopengl0 libxcb-cursor0
-
-      - name: Restore Calibre from the cache
-        id: calibre-cache
-        if: matrix.calibre != 'latest'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/calibre-bin
-          key: calibre-${{ runner.os }}-${{ runner.arch }}-${{ matrix.calibre }}
-
-      - name: Install Calibre
-        if: steps.calibre-cache.outputs.cache-hit != 'true'
-        # Calibre's official binary installer. It verifies the download
-        # against a signature it fetches separately. isolated=y unpacks into
-        # install_dir and touches nothing else on the machine.
-        run: |
-          wget -nv -O "$RUNNER_TEMP/linux-installer.sh" https://download.calibre-ebook.com/linux-installer.sh
-          args=(install_dir="$HOME/calibre-bin" isolated=y)
-          if [ "$CALIBRE_VERSION" != "latest" ]; then
-            args+=(version="$CALIBRE_VERSION")
-          fi
-          sh "$RUNNER_TEMP/linux-installer.sh" "${args[@]}"
-
-      - name: Show the Calibre version
-        run: |
-          "$HOME/calibre-bin/calibre/calibre-debug" --version
-
-      - name: Choose the plugin source
-        run: |
-          if [ -n "$PLUGIN_REF" ]; then
-            echo "PLUGIN_DIR=plugin-under-test/plugins/calibre-bridge" >> "$GITHUB_ENV"
-          else
-            echo "PLUGIN_DIR=plugins/calibre-bridge" >> "$GITHUB_ENV"
-          fi
-
-      - name: Model check (real library, real BooksModel)
-        id: model
-        run: |
-          python3 plugins/calibre-bridge/tests/integration/run.py model \
-            --calibre-dir "$HOME/calibre-bin/calibre" --plugin-dir "$PLUGIN_DIR"
-
-      - name: Boot check (full Calibre, HTTP round trip)
-        # The two checks are independent, so a failed model check does not
-        # hide what the boot check has to say.
-        if: success() || steps.model.conclusion == 'failure'
-        run: |
-          python3 plugins/calibre-bridge/tests/integration/run.py boot \
-            --calibre-dir "$HOME/calibre-bin/calibre" --plugin-dir "$PLUGIN_DIR"
+  # Whatever Calibre released most recently. It is early warning of a Calibre
+  # change, so it runs only weekly and on demand, never on a pull request or a
+  # push. It has no continue-on-error on purpose: a failure fails the
+  # scheduled run, and a failed scheduled run is what GitHub notifies about.
+  latest:
+    name: calibre latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/calibre-check.yml
+    with:
+      calibre: latest
+      plugin_ref: ${{ inputs.plugin_ref }}
