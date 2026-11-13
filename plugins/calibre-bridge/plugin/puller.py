@@ -8,9 +8,11 @@ downloads each file into a private temp directory, adds it through the same
 :func:`adder.add_book_detailed` the push handler uses, and acknowledges.
 
 Delivery is at least once. A book that was added but whose ack never reached
-Bindery is listed again on the next pass; the ``bindery`` identifier dedupe
-then answers "duplicate", and the retry is acknowledged as ``already``
-without a second row.
+Bindery is remembered in memory as "imported, ack pending". When Bindery lists
+it again, only the ack is retried (with a growing delay between passes) and
+the file is not downloaded or imported a second time. If the plugin restarted
+and forgot, the ``bindery`` identifier dedupe answers "duplicate" and the
+retry is acknowledged as ``already`` without a second row.
 
 :meth:`PullWorker.run_once` is one complete pass and is what the tests
 drive. :meth:`PullWorker.start` runs it on a daemon thread on a schedule.
@@ -26,6 +28,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -52,6 +55,9 @@ MAX_PAGES_PER_PASS = 50
 COVER_LIMIT = 16 * 1024 * 1024
 # Bindery caps nack error text at 2000 characters.
 MAX_NACK_ERROR = 2000
+# Deliveries imported whose ack failed, remembered so the file is not fetched
+# again. The oldest is forgotten first; the dedupe is the backstop.
+MAX_PENDING_ACKS = 256
 
 # A format is only ever used as a file extension on a name the plugin makes
 # up. Never a server supplied file name.
@@ -109,6 +115,38 @@ class PullStats:
     def failed(self) -> int:
         """Deliveries this pass could not deliver: refused, unacked or unusable."""
         return self.nacked + self.ack_failed + self.skipped
+
+
+@dataclass
+class _PendingAck:
+    """A delivery that is in Calibre but whose ack Bindery has not accepted."""
+
+    body: dict[str, Any]
+    action: str
+    library: str
+    # What the listing said when the file was imported. A delivery id that
+    # comes back with other values is a different delivery (Bindery restored
+    # from a backup reuses ids), not the one this ack belongs to.
+    fmt: str = ""
+    book_id: str = ""
+    failures: int = 0
+
+    def describes(self, delivery: dict[str, Any]) -> bool:
+        """True when the listing entry is the delivery this ack was owed for."""
+        return (
+            self.fmt == _listed_format(delivery)
+            and self.book_id == _listed_book_id(delivery)
+            and self.action == str(delivery.get("action") or "add")
+        )
+
+
+def _listed_format(delivery: dict[str, Any]) -> str:
+    return str(delivery.get("format") or "").strip().lower()
+
+
+def _listed_book_id(delivery: dict[str, Any]) -> str:
+    value = delivery.get("bookId")
+    return "" if value is None else str(value)
 
 
 class _Stop(Exception):
@@ -189,6 +227,7 @@ class PullWorker:
         self._wait = wait
         self._thread: threading.Thread | None = None
         self._failures = 0
+        self._ack_pending: OrderedDict[str, _PendingAck] = OrderedDict()
         self.last_stats: PullStats | None = None
 
     # -- lifecycle -----------------------------------------------------------
@@ -483,6 +522,14 @@ class PullWorker:
             _log.warning("pull: skipping a delivery with an unusable id %r", delivery_id)
             stats.skipped += 1
             return
+        pending = self._ack_pending.get(delivery_id)
+        if pending is not None:
+            if pending.library == _library_path(db) and pending.describes(delivery):
+                self._ack(client, delivery_id, pending, stats, retry=True)
+                return
+            # Imported into another library, or the id now names another
+            # delivery: the owed ack does not apply, so import this one.
+            del self._ack_pending[delivery_id]
         try:
             ext = delivery_extension(delivery.get("format"))
         except ValueError as exc:
@@ -568,37 +615,70 @@ class PullWorker:
                 "coverApplied": cover_applied,
                 "library": _library_path(db),
             }
-            try:
-                client.ack(delivery_id, body)
-            except bindery_client.BinderyError as exc:
-                if _already_settled(exc):
-                    # Delivered elsewhere, failed, skipped or gone on
-                    # Bindery's side. Nothing to retry and nothing wrong here.
-                    _log.debug("pull: ack of delivery %s not needed: %s", delivery_id, exc)
-                    stats.settled += 1
-                    self._settled(stats)
-                    return
-                # The book is in Calibre; Bindery will list it again and the
-                # dedupe turns the retry into an ``already`` ack.
-                _log.warning("pull: ack of delivery %s failed: %s", delivery_id, exc)
-                stats.ack_failed += 1
-                stats.error = f"ack {delivery_id}: {exc}"
-                return
-            stats.acks.append({"id": delivery_id, **body})
-            self._settled(stats)
-            _log.info(
-                "pull: delivery %s (%s %s) acknowledged as %s, book %d",
+            self._ack(
+                client,
                 delivery_id,
-                action,
-                ext,
-                outcome,
-                body["calibreId"],
+                _PendingAck(
+                    body,
+                    str(action),
+                    str(body["library"]),
+                    _listed_format(delivery),
+                    _listed_book_id(delivery),
+                ),
+                stats,
             )
-            if action == "add":
-                stats.acked_adds += 1
-            status.add_pull_delivered(1)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _ack(
+        self,
+        client: Any,
+        delivery_id: str,
+        entry: _PendingAck,
+        stats: PullStats,
+        retry: bool = False,
+    ) -> None:
+        """Send the ack for an imported delivery, or remember that it is owed."""
+        try:
+            client.ack(delivery_id, entry.body)
+        except bindery_client.BinderyError as exc:
+            if _already_settled(exc):
+                # Delivered elsewhere, failed, skipped or gone on
+                # Bindery's side. Nothing to retry and nothing wrong here.
+                _log.debug("pull: ack of delivery %s not needed: %s", delivery_id, exc)
+                self._ack_pending.pop(delivery_id, None)
+                stats.settled += 1
+                self._settled(stats)
+                return
+            # The book is in Calibre. Keep the ack and retry only that, so a
+            # failing ack does not cost a download on every pass.
+            _log.warning("pull: ack of delivery %s failed: %s", delivery_id, exc)
+            stats.ack_failed += 1
+            stats.error = f"ack {delivery_id}: {exc}"
+            entry.failures += 1
+            self._ack_pending[delivery_id] = entry
+            self._ack_pending.move_to_end(delivery_id)
+            while len(self._ack_pending) > MAX_PENDING_ACKS:
+                self._ack_pending.popitem(last=False)
+            delay = min(self._interval() * (2 ** min(entry.failures, 16)), MAX_BACKOFF)
+            stats.next_delay = max(stats.next_delay or 0.0, delay)
+            return
+        self._ack_pending.pop(delivery_id, None)
+        if retry:
+            stats.already += 1
+        stats.acks.append({"id": delivery_id, **entry.body})
+        self._settled(stats)
+        _log.info(
+            "pull: delivery %s (%s %s) acknowledged as %s, book %d",
+            delivery_id,
+            entry.action,
+            entry.fmt,
+            entry.body["outcome"],
+            entry.body["calibreId"],
+        )
+        if entry.action == "add":
+            stats.acked_adds += 1
+        status.add_pull_delivered(1)
 
     def _download_cover(self, client: Any, delivery_id: str, tmpdir: str) -> str:
         """Fetch the cover next to the book. "" when there is none or it failed.

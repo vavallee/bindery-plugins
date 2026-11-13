@@ -4,6 +4,7 @@ import logging
 import ntpath
 import os
 import pathlib
+import unicodedata
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
@@ -320,6 +321,11 @@ def _attach_to_bindery_row(
     formats = _row_formats(api, book_id)
     if formats is None:
         return None
+    # A search result is only a candidate. Confirm the row carries this exact
+    # identifier before a file goes onto it.
+    if not _row_has_identifier(api, book_id, "bindery", bindery_id):
+        _log.warning("not attaching to book %d: it does not carry the bindery identifier", book_id)
+        return None
     if formats:
         if not add_format or fmt in formats:
             return None
@@ -533,6 +539,26 @@ def _is_placeholder(value: Any) -> bool:
     if not isinstance(value, str):
         return _is_empty(value)
     return value.strip().lower() in _PLACEHOLDERS
+
+
+def _row_has_identifier(api: Any, book_id: int, typ: str, val: str) -> bool:
+    """True when the row's stored identifiers include this type and value.
+
+    Read back from the database rather than trusted from a search, and False
+    when they cannot be read. Calibre's ``=`` search ignores case, so this
+    does too.
+    """
+    try:
+        ids = api.field_for("identifiers", book_id) or {}
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("could not read the identifiers of book %d: %s", book_id, exc)
+        return False
+    want_typ = typ.strip().casefold()
+    want_val = val.strip().casefold()
+    return any(
+        str(k).strip().casefold() == want_typ and str(v).strip().casefold() == want_val
+        for k, v in dict(ids).items()
+    )
 
 
 def _is_empty_bindery_row(api: Any, book_id: int, bindery_id: str) -> bool:
@@ -1061,6 +1087,12 @@ def _clean_identifiers(value: Any) -> dict[str, str]:
 
 
 def _book_id_for_identifier(api: Any, typ: str, val: str) -> int:
+    """The lowest id of a row that carries exactly this identifier, 0 for none.
+
+    A search result is only a candidate, so every id it returns is read back
+    and kept only when the row really holds the identifier. A search that
+    raises is treated as no match.
+    """
     typ = _clean_str(typ)
     val = _clean_str(val)
     if not typ or not val:
@@ -1069,10 +1101,61 @@ def _book_id_for_identifier(api: Any, typ: str, val: str) -> int:
     if not query:
         return 0
 
-    matches = set(api.search(query) or ())
-    if not matches:
+    try:
+        candidates = set(api.search(query) or ())
+    except Exception as exc:
+        # Calibre's query parser can refuse a query: no match. Anything else
+        # is a library fault, and treating that as "not there" would add a
+        # duplicate, so it propagates. The value stays out of the log.
+        if not (isinstance(exc, ValueError) or type(exc).__name__ == "ParseException"):
+            raise
+        _log.warning(
+            "identifier search was refused (%s); treating it as no match", type(exc).__name__
+        )
         return 0
-    return min(int(book_id) for book_id in matches)
+    verified = [
+        int(book_id) for book_id in candidates if _row_has_identifier(api, int(book_id), typ, val)
+    ]
+    return min(verified) if verified else 0
+
+
+# Characters Calibre's query tokenizer treats as docstring separators.
+_SEARCH_SEPARATORS = "\u25a1\u0f00\u0606"
+
+
+def _identifier_is_searchable(typ: str, val: str) -> bool:
+    """False for a type or value that could change the meaning of a search.
+
+    The lexer splits on every Unicode whitespace character, but only a plain
+    space is quoted around, so any other whitespace would start a new term.
+    A plain space is allowed in a value because the whole term is quoted
+    then. Quotes, backslashes, the tokenizer's separator characters and
+    control or format characters are refused in both halves, and a type may
+    not contain whitespace or a colon. A leading dot in either half is
+    refused too: the matcher reads it as a dotted-component comparison, which
+    is broader than an exact match.
+    """
+    if typ.startswith(".") or val.startswith("."):
+        return False
+    for ch in typ:
+        if (
+            ch.isspace()
+            or ch in ':"\\'
+            or ch in _SEARCH_SEPARATORS
+            or unicodedata.category(ch).startswith("C")
+        ):
+            return False
+    for ch in val:
+        if ch == " ":
+            continue
+        if (
+            ch.isspace()
+            or ch in '"\\'
+            or ch in _SEARCH_SEPARATORS
+            or unicodedata.category(ch).startswith("C")
+        ):
+            return False
+    return True
 
 
 def _identifier_search_query(typ: str, val: str) -> str:
@@ -1103,9 +1186,12 @@ def _identifier_search_query(typ: str, val: str) -> str:
 
     A double quote in the value is unexpressible: the lexer keeps the
     backslash of a ``\\"`` escape in the literal it hands to the matcher, so
-    there is no spelling that compares equal. Refuse those too.
+    there is no spelling that compares equal. Refuse those too, along with
+    backslashes, control characters and any whitespace the lexer would split
+    on (see :func:`_identifier_is_searchable`).
     """
-    if '"' in typ or '"' in val:
+    if not _identifier_is_searchable(typ, val):
+        _log.warning("ignoring an identifier that cannot be searched for safely")
         return ""
     if val.strip().lower() in ("true", "false"):
         return ""

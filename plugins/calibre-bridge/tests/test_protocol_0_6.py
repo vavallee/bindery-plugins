@@ -746,6 +746,9 @@ def test_add_book_recovers_the_id_when_calibre_reports_a_duplicate(bridge_adder,
             # Empty on the ladder's pass, populated by the time we look again.
             return {5} if self.searches > 1 else set()
 
+        def field_for(self, name, book_id):
+            return {"bindery": "42"}
+
         def find_identical_books(self, mi):
             return set()
 

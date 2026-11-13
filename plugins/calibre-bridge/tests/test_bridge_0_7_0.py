@@ -234,6 +234,8 @@ def _wire_db():
     db = MagicMock()
     db.new_api.search.return_value = {7}
     db.new_api.formats.return_value = ("EPUB",)
+    # The row a search returns must carry the identifier, as a real one does.
+    db.new_api.field_for.return_value = {"bindery": "42"}
     db.new_api.add_format.return_value = True
     db.new_api.get_metadata.return_value = MagicMock()
     # A new row, for the requests that never match.

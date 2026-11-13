@@ -450,7 +450,7 @@ def test_a_book_already_in_calibre_is_acked_already(pull, bindery):
     assert len(h.library.rows) == 1
 
 
-def test_a_lost_ack_is_re_added_as_already_with_one_row(pull, bindery, tempdirs):
+def test_a_lost_ack_is_retried_without_downloading_again(pull, bindery, tempdirs):
     bindery.add("d1")
     bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
     h = Harness(pull, bindery.url)
@@ -460,20 +460,155 @@ def test_a_lost_ack_is_re_added_as_already_with_one_row(pull, bindery, tempdirs)
     assert bindery.pending() == ["d1"]
 
     second = h.run()
-    assert second.already == 1
+    assert second.ack_failed == 0
     assert bindery.acks == [
         (
             "d1",
             {
                 "calibreId": 1,
-                "outcome": "already",
+                "outcome": "added",
                 "coverApplied": None,
                 "library": "/srv/calibre/Library",
             },
         )
     ]
     assert len(h.library.rows) == 1
+    assert _downloads(bindery) == 1
     assert not any(os.path.exists(d) for d in tempdirs)
+
+
+def _downloads(bindery):
+    return sum(1 for _m, p, _h in bindery.requests if p.endswith("/file"))
+
+
+def test_a_lost_ack_after_a_restart_is_acked_already_by_the_dedupe(pull, bindery):
+    """The pending marker is in memory only; the dedupe is the backstop."""
+    bindery.add("d1")
+    bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
+    h = Harness(pull, bindery.url)
+    h.run()
+    h.worker._ack_pending.clear()
+
+    second = h.run()
+
+    assert second.already == 1
+    assert bindery.acks[0][1]["outcome"] == "already"
+    assert len(h.library.rows) == 1
+    assert _downloads(bindery) == 2
+
+
+def test_a_failing_ack_costs_one_download_across_passes(pull, bindery):
+    bindery.add("d1")
+    for _ in range(5):
+        bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
+    h = Harness(pull, bindery.url)
+
+    stats = [h.run() for _ in range(5)]
+
+    assert [s.ack_failed for s in stats] == [1, 1, 1, 1, 1]
+    assert _downloads(bindery) == 1
+    assert len(h.library.rows) == 1
+    assert bindery.acks == []
+    assert list(h.worker._ack_pending) == ["d1"]
+
+    recovered = h.run()
+
+    assert recovered.ack_failed == 0
+    assert [a[0] for a in bindery.acks] == ["d1"]
+    assert _downloads(bindery) == 1
+    assert h.worker._ack_pending == {}
+    assert len(h.library.rows) == 1
+
+
+def test_the_delay_grows_while_the_ack_keeps_failing(pull, bindery):
+    bindery.add("d1")
+    for _ in range(8):
+        bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
+    h = Harness(pull, bindery.url)
+
+    delays = [h.worker.next_delay(h.run()) for _ in range(8)]
+
+    assert delays[:3] == [120, 240, 480]
+    assert delays == sorted(delays)
+    assert delays[-1] == pull.puller.MAX_BACKOFF
+
+
+def test_a_settled_ack_clears_the_pending_marker(pull, bindery):
+    bindery.add("d1")
+    bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
+    bindery.override("ack", 409, {"error": "delivered elsewhere", "code": "not_pending"})
+    h = Harness(pull, bindery.url)
+
+    h.run()
+    stats = h.run()
+
+    assert (stats.settled, stats.ack_failed) == (1, 0)
+    assert h.worker._ack_pending == {}
+
+
+def test_the_pending_ack_memory_is_bounded(pull, bindery, monkeypatch):
+    monkeypatch.setattr(pull.puller, "MAX_PENDING_ACKS", 3)
+    for n in range(1, 6):
+        bindery.add(f"d{n}", bindery=str(n), title=f"Book {n}")
+        bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
+    h = Harness(pull, bindery.url)
+
+    h.run()
+
+    assert list(h.worker._ack_pending) == ["d3", "d4", "d5"]
+
+
+def test_a_pending_ack_for_another_library_is_dropped(pull, bindery):
+    bindery.add("d1")
+    bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
+    h = Harness(pull, bindery.url)
+    h.run()
+    h.holder["db"] = h.db = PullDB(PullLibrary(), path="/srv/calibre/Other")
+
+    h.run()
+
+    assert len(h.library.rows) == 1
+    assert _downloads(bindery) == 2
+
+
+def test_a_huge_failure_count_does_not_overflow_the_delay(pull, bindery):
+    bindery.add("d1")
+    for _ in range(2):
+        bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
+    h = Harness(pull, bindery.url)
+    h.run()
+    h.worker._ack_pending["d1"].failures = 2000
+
+    stats = h.run()
+
+    assert stats.ack_failed == 1
+    assert h.worker.next_delay(stats) == pull.puller.MAX_BACKOFF
+    assert _downloads(bindery) == 1
+
+
+@pytest.mark.parametrize(
+    ("fmt", "bindery_id"),
+    [("epub", "9"), ("pdf", "9"), ("pdf", "7")],
+)
+def test_a_reused_delivery_id_is_imported_not_acked_with_the_old_body(
+    pull, bindery, fmt, bindery_id
+):
+    """Bindery restored from a backup can hand out a delivery id again."""
+    bindery.add("d1")
+    bindery.override("ack", 500, {"error": "database locked", "code": "internal"})
+    h = Harness(pull, bindery.url)
+    h.run()
+    assert list(h.worker._ack_pending) == ["d1"]
+
+    del bindery.queue["d1"]
+    bindery.order.remove("d1")
+    bindery.add("d1", fmt=fmt, bindery=bindery_id, title="A Different Book")
+    stats = h.run()
+
+    assert _downloads(bindery) == 2
+    assert stats.ack_failed == 0
+    assert [a[0] for a in bindery.acks] == ["d1"]
+    assert h.worker._ack_pending == {}
 
 
 # ── size cap ─────────────────────────────────────────────────────────────────

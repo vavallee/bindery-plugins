@@ -86,6 +86,10 @@ class FakeLibrary:
             if row["identifiers"].get(key, "").lower() == value
         }
 
+    def field_for(self, name, book_id):
+        assert name == "identifiers"
+        return dict(self.rows[book_id]["identifiers"])
+
     def find_identical_books(self, mi):
         self.find_identical_books_calls.append(mi)
         wanted_authors = {a.lower() for a in (mi.authors or [])}
