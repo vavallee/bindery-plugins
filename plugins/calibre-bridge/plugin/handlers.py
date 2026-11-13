@@ -22,17 +22,29 @@ def _plugin_version() -> str:
         from calibre_plugins.bindery_bridge import BinderyBridge
 
         version = BinderyBridge.version
-    except ImportError:
+    except ImportError as import_error:
         import ast
         import pathlib
 
         init_file = pathlib.Path(__file__).resolve().parent.parent / "__init__.py"
-        match = re.search(
-            r"^[ \t]+version\s*=\s*(\([^)]*\))", init_file.read_text(encoding="utf-8"), re.M
-        )
-        if match is None:
-            raise RuntimeError(f"no version tuple in {init_file}") from None
-        version = ast.literal_eval(match.group(1))
+        try:
+            source = init_file.read_text(encoding="utf-8")
+        except OSError as read_error:
+            why_parse = f"{init_file} could not be read ({read_error})"
+        else:
+            match = re.search(r"^[ \t]+version\s*=\s*(\([^)]*\))", source, re.M)
+            if match is not None:
+                return ".".join(str(part) for part in ast.literal_eval(match.group(1)))
+            why_parse = f"{init_file} has no version tuple"
+        raise RuntimeError(
+            "The plugin version could not be determined. Two strategies were tried. "
+            "(1) Importing BinderyBridge from calibre_plugins.bindery_bridge failed "
+            f"({import_error}). "
+            f"(2) Parsing the package __init__.py next to this file failed: {why_parse}. "
+            "This happens inside a zip, where __file__ is not a real path. "
+            "The package __init__ must not import plugin.* at module level, because "
+            "that makes the import in (1) circular."
+        ) from import_error
     return ".".join(str(part) for part in version)
 
 
