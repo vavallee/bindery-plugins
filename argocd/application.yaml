@@ -12,7 +12,7 @@ spec:
             # The release to install. It moves together with targetRevision
             # below, in the chart PR that follows each release:
             # python scripts/bump_chart.py X.Y.Z
-            pluginVersion: "0.8.3"
+            pluginVersion: "0.8.4"
   template:
     metadata:
       name: "calibre-plugin-installer-{{cluster}}"
@@ -21,7 +21,7 @@ spec:
       source:
         repoURL: https://github.com/vavallee/bindery-plugins
         # The chart as of that release tag. Moves with pluginVersion above.
-        targetRevision: v-calibre-bridge-0.8.3
+        targetRevision: v-calibre-bridge-0.8.4
         path: charts/calibre-plugin-installer
         helm:
           releaseName: calibre-plugin-installer
