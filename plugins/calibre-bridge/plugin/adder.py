@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import ntpath
 import os
@@ -752,9 +753,8 @@ def _schedule_gui_refresh(
 
     ``add_books`` runs on the bridge's HTTP thread, so the library view never
     learns about the new rows until something pokes the model and the user is
-    forced to press Ctrl+R. ``books_added()`` is what inserts the new rows and
-    ``tags_view.recount()`` refreshes the tag browser counts. Both must run on
-    the GUI thread.
+    forced to press Ctrl+R. :func:`show_new_books` is what puts the new rows in
+    the view and refreshes the tag browser, and it must run on the GUI thread.
 
     ``on_added`` is how they get there. The action builds it on the GUI thread
     as a ``calibre.gui2.Dispatcher``, which queues the call onto the thread it
@@ -784,13 +784,148 @@ def _schedule_gui_refresh(
             return
 
     def _refresh() -> None:
-        try:
-            gui.library_view.model().books_added(count)
-            gui.tags_view.recount()
-        except Exception as exc:
-            _log.debug("Calibre GUI refresh failed: %s", exc)
+        show_new_books(gui, count)
 
     QTimer.singleShot(0, _refresh)
+
+
+class _ViewIndexUnavailable(Exception):
+    """The library view's id index is not where this module expects it."""
+
+
+def _register_new_rows(model: Any) -> list[int]:
+    """Teach the library view about books the database has and the view lacks.
+
+    ``model.db`` is Calibre's legacy ``LibraryDatabase`` and ``model.db.data``
+    is its ``View``, the object that decides which rows the library list has
+    (``BooksModel.rowCount`` is ``len(db.data)``) and which books a search can
+    return (``View.search_getting_ids`` only keeps ids that are in the view's
+    ``_map``). This plugin adds books through ``db.new_api.add_books``, the
+    ``Cache``, because the legacy ``add_books`` runs plugin hooks that touch Qt
+    from the wrong thread. The Cache has no idea a view exists, so it never
+    tells it: only the legacy wrappers call ``self.data.books_added(ids)``
+    (``db/legacy.py``: ``create_book_entry``, ``add_books``, ``import_book``).
+    Until that call is made the new book is in metadata.db and nowhere in the
+    list, and a search cannot find it, which is exactly Ctrl+R's cure:
+    ``View.refresh`` rebuilds ``_map`` from ``Cache.all_book_ids``. Calibre's own
+    handler for books another writer added to the open library does the same two
+    steps (``gui2/changes.py``: ``gui.current_db.data.books_added(added)``, then
+    ``gui.iactions['Add Books'].refresh_gui(len(added))``), on 9.14 and 9.18.
+
+    Comparing against the database instead of trusting a count or an id list
+    makes this safe to run twice, after two adds coalesce, or against a library
+    that was switched between the add and the refresh: whatever is already in
+    the view is left alone, so no row is ever shown twice.
+
+    Returns the ids that were added, oldest first. Raises when the view has no
+    ``_map`` so the caller can fall back to a full refresh.
+    """
+    db = model.db
+    data = db.data
+    known = getattr(data, "_map", None)
+    if known is None:
+        raise _ViewIndexUnavailable("View._map is missing")
+    missing = sorted(frozenset(db.new_api.all_book_ids()).difference(known))
+    if missing:
+        data.books_added(missing)
+    return missing
+
+
+def _full_refresh(model: Any) -> None:
+    """Ctrl+R: rebuild the view from the database. Never raises."""
+    try:
+        model.refresh()
+    except Exception as exc:
+        _log.debug("Calibre GUI full refresh failed: %s", exc)
+
+
+def _recount_tags(gui: Any) -> None:
+    with contextlib.suppress(Exception):
+        gui.tags_view.recount()
+
+
+def _announce_rows(gui: Any, model: Any, count: int) -> None:
+    """Tell the list and the tag browser that ``count`` rows were put at the top.
+
+    Prefers the Add Books action's own ``refresh_gui(num)``, the call Calibre
+    makes after it adds a book (``gui2/actions/add.py``). It does
+    ``books_added(num)``, refreshes the cover browser and recounts the tag
+    browser without letting the first recount run on stale positions, and it has
+    the same signature on 9.14 and 9.18. When the action is not there the model
+    call and a recount do the same job. A failure part way through can leave the
+    model half announced, so the only safe next step is a full refresh.
+    """
+    refresh = None
+    try:
+        refresh = gui.iactions["Add Books"].refresh_gui
+    except Exception as exc:
+        _log.debug("Add Books action unavailable, announcing rows directly: %s", exc)
+    try:
+        if refresh is not None:
+            refresh(count)
+        else:
+            model.books_added(count)
+            _recount_tags(gui)
+    except Exception as exc:
+        _log.debug("Calibre GUI row announce failed, doing a full refresh: %s", exc)
+        _full_refresh(model)
+
+
+def show_new_books(gui: Any, count: int) -> None:
+    """Make freshly added books appear in the library list. GUI thread only.
+
+    ``gui`` is read now, not when the plugin was set up, so it does not matter
+    when Calibre built the library view relative to ``genesis`` (it always
+    builds it after: ``Main.initialize`` calls every action's ``genesis`` before
+    ``init_library_view_mixin``). Never raises: a refresh that fails must not
+    turn a delivered book into a failed delivery. ``count`` is only logged; the
+    rows to show come from :func:`_register_new_rows`.
+    """
+    try:
+        model = gui.library_view.model()
+    except Exception as exc:
+        _log.debug("No library view to refresh yet: %s", exc)
+        return
+    try:
+        added = _register_new_rows(model)
+    except Exception as exc:
+        _log.debug("Could not register new rows with the view, doing a full refresh: %s", exc)
+        _full_refresh(model)
+        return
+    _log.debug("Calibre GUI refresh: %d added, %d new rows in the view", count, len(added))
+    if added:
+        _announce_rows(gui, model, len(added))
+
+
+def redraw_book(gui: Any, book_id: int) -> None:
+    """Redraw a book that was already in the library. GUI thread only.
+
+    A row the view already has only needs ``refresh_ids``. A row it does not
+    have yet (an empty row from a failed add, repaired and filled in later, was
+    never shown because the Cache created it) goes through the same
+    registration as a new book. Never raises.
+    """
+    try:
+        model = gui.library_view.model()
+    except Exception as exc:
+        _log.debug("No library view to refresh yet: %s", exc)
+        return
+    try:
+        added = _register_new_rows(model)
+    except Exception as exc:
+        _log.debug("Could not register rows with the view, doing a full refresh: %s", exc)
+        _full_refresh(model)
+        return
+    if added:
+        _announce_rows(gui, model, len(added))
+    if book_id in added:
+        return
+    try:
+        model.refresh_ids([book_id])
+        _recount_tags(gui)
+    except Exception as exc:
+        _log.debug("Calibre GUI row refresh failed, doing a full refresh: %s", exc)
+        _full_refresh(model)
 
 
 def apply_bindery_metadata(mi: Any, metadata: dict[str, Any] | None) -> None:

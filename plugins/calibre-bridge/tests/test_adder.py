@@ -556,24 +556,24 @@ def test_legacy_gui_fallback_only_queues_a_timer(tmp_path, monkeypatch):
     The refresh body runs only if something drains that timer. On the worker
     thread nothing does, which is the 0.6.2 bug; on_added is the fix.
     """
+    from .test_gui_refresh import FakeLegacyDB, make_gui, visible
+
     timers = _stub_qt_core(monkeypatch)
     adder = _load_adder()
     book = tmp_path / "book.epub"
     book.write_bytes(b"stub epub bytes")
 
-    db = MagicMock()
-    db.new_api.search.return_value = set()
-    db.new_api.add_books.return_value = ([42], {})
-    gui = MagicMock()
+    db = FakeLegacyDB()
+    gui = make_gui(db)
 
     book_id, duplicate = adder.add_book(db, str(book), gui=gui)
 
-    assert (book_id, duplicate) == (42, False)
+    assert (book_id, duplicate) == (1, False)
     assert len(timers) == 1
-    gui.library_view.model().books_added.assert_not_called()
-    # If Qt did run it, the body is still the right one.
+    assert visible(gui) == []
+    # If Qt did run it, the body shows the book.
     timers[0][1]()
-    gui.library_view.model().books_added.assert_called_once_with(1)
+    assert visible(gui) == ["Stub Title"]
     gui.tags_view.recount.assert_called_once_with()
 
 
