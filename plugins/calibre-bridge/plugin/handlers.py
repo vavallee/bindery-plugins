@@ -1,7 +1,11 @@
 import hmac
+import ipaddress
 import json
 import logging
+import math
 import re
+import threading
+import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -87,12 +91,33 @@ CODE_BAD_FORMAT = "bad_format"
 CODE_BODY_TOO_LARGE = "body_too_large"
 CODE_NOT_FOUND = "not_found"
 CODE_INTERNAL = "internal"
+# Requests the server refuses on sight, before any auth or body read.
+CODE_FORBIDDEN = "forbidden"
+CODE_UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"
+CODE_RATE_LIMITED = "rate_limited"
 
 # Hint for the client's 503 backoff. protocol.md asks for exponential backoff
 # up to about 30 seconds; a library swap is normally over in well under one.
 RETRY_AFTER_SECONDS = 2
 
 _BOOK_ID_PATH = re.compile(r"^/v1/books/(?P<book_id>[^/]+)$")
+
+# The Server header carries a fixed name, not the Python and BaseHTTP versions.
+SERVER_NAME = "bindery-bridge"
+
+# Seconds a connection may take to send its request line and headers, and then
+# the longest it may sit idle while the body arrives. The body also has a total
+# deadline (see _read_json_body) so a trickle cannot hold a thread for ever.
+DEFAULT_HEADER_TIMEOUT = 10.0
+DEFAULT_BODY_TIMEOUT = 30.0
+# Slowest sustained body upload the total deadline allows for, in bytes/second.
+BODY_MIN_RATE = 32 * 1024
+
+# Failed credential attempts per client address: this many inside the window
+# earns a block of the same length.
+AUTH_FAIL_LIMIT = 5
+AUTH_FAIL_WINDOW = 60.0
+AUTH_THROTTLE_MAX_ENTRIES = 1024
 
 _log = logging.getLogger(__name__)
 
@@ -130,6 +155,107 @@ def _tokens_match(presented: str, expected: str) -> bool:
     return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
 
 
+def _host_is_loopback(host_header: str) -> bool:
+    """True when the host part of a Host header names this machine.
+
+    Accepts ``localhost``, any 127.0.0.0/8 literal and ``[::1]``, with or
+    without a port. Anything else, including a missing header, is False.
+    """
+    host = host_header.strip().lower()
+    if not host:
+        return False
+    if host.startswith("["):
+        end = host.find("]")
+        if end < 0:
+            return False
+        host = host[1:end]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    if host.rstrip(".") == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.version == 4:
+        return ip in ipaddress.ip_network("127.0.0.0/8")
+    return ip == ipaddress.ip_address("::1")
+
+
+def _is_json_content_type(value: str) -> bool:
+    return value.split(";", 1)[0].strip().lower() == "application/json"
+
+
+class _FailureThrottle:
+    """Per client address counter of failed credential attempts.
+
+    ``limit`` failures inside ``window`` seconds block the address for
+    ``window`` seconds. Memory is bounded: expired entries are dropped when the
+    table fills, and past ``max_entries`` the oldest entry goes.
+    """
+
+    def __init__(
+        self,
+        limit: int = AUTH_FAIL_LIMIT,
+        window: float = AUTH_FAIL_WINDOW,
+        clock: Callable[[], float] = time.monotonic,
+        max_entries: int = AUTH_THROTTLE_MAX_ENTRIES,
+    ) -> None:
+        self._limit = limit
+        self._window = window
+        self._clock = clock
+        self._max = max_entries
+        self._lock = threading.Lock()
+        # address -> [window start, failures in window, blocked until]
+        self._entries: dict[str, list[float]] = {}
+
+    def retry_after(self, addr: str) -> int:
+        """Whole seconds until ``addr`` may try again; 0 when it is not blocked."""
+        with self._lock:
+            entry = self._entries.get(addr)
+            if entry is None:
+                return 0
+            remaining = entry[2] - self._clock()
+            return math.ceil(remaining) if remaining > 0 else 0
+
+    def record_failure(self, addr: str) -> bool:
+        """Count one failure. True when this one tripped the block."""
+        with self._lock:
+            now = self._clock()
+            entry = self._entries.get(addr)
+            if entry is None or (now - entry[0] >= self._window and now >= entry[2]):
+                if entry is None and len(self._entries) >= self._max:
+                    self._make_room(now)
+                entry = [now, 0.0, 0.0]
+                self._entries[addr] = entry
+            entry[1] += 1
+            if entry[1] >= self._limit and entry[2] <= now:
+                entry[2] = now + self._window
+                return True
+            return False
+
+    def _make_room(self, now: float) -> None:
+        expired = [
+            a for a, e in self._entries.items() if now >= e[2] and now - e[0] >= self._window
+        ]
+        for addr in expired:
+            del self._entries[addr]
+        if len(self._entries) >= self._max:
+            oldest = min(self._entries, key=lambda a: self._entries[a][0])
+            del self._entries[oldest]
+
+
+class _BridgeHandlerBase(BaseHTTPRequestHandler):
+    """Settings every bridge handler shares: read timeout and a fixed Server header."""
+
+    # Applied to the connection socket in StreamRequestHandler.setup, so it
+    # bounds each read of the request line and headers.
+    timeout = DEFAULT_HEADER_TIMEOUT
+
+    def version_string(self) -> str:
+        return SERVER_NAME
+
+
 def make_handler(
     api_key: str,
     get_db: Callable[[], Any],
@@ -138,11 +264,19 @@ def make_handler(
     max_body_bytes: int = 64 * 1024 * 1024,
     on_added: Callable[[int], Any] | None = None,
     on_updated: Callable[[int], Any] | None = None,
+    header_timeout: float = DEFAULT_HEADER_TIMEOUT,
+    body_timeout: float = DEFAULT_BODY_TIMEOUT,
+    clock: Callable[[], float] = time.monotonic,
 ) -> type:
     from calibre_plugins.bindery_bridge.plugin import adder as adder_mod
 
-    class Handler(BaseHTTPRequestHandler):
-        server_version = "BinderyBridge/" + PLUGIN_VERSION
+    throttle = _FailureThrottle(clock=clock)
+
+    class Handler(_BridgeHandlerBase):
+        timeout = header_timeout
+        # Seconds the current request must wait before retrying; set by
+        # _check_auth when the client address is blocked.
+        _throttle_wait = 0
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             _log.debug(format, *args)
@@ -174,7 +308,33 @@ def make_handler(
             self._send_json(status, {"error": message, "code": code}, headers=headers)
 
         def _send_unauthorized(self) -> None:
+            if self._throttle_wait:
+                self._send_error_json(
+                    429,
+                    CODE_RATE_LIMITED,
+                    "too many failed attempts",
+                    headers={"Retry-After": str(self._throttle_wait)},
+                )
+                return
             self._send_error_json(401, CODE_UNAUTHORIZED, "unauthorized")
+
+        def _gate(self) -> bool:
+            """Refuse requests a browser or a rebound hostname could be behind.
+
+            Bindery never sends ``Origin``, and a browser always does on a
+            cross origin request, so any ``Origin`` is refused on every route.
+            With no api_key the bridge has no credential, so the Host header
+            must also name this machine, which closes DNS rebinding.
+            """
+            if "Origin" in self.headers:
+                self._send_error_json(403, CODE_FORBIDDEN, "cross-origin requests are refused")
+                return False
+            if not api_key and not _host_is_loopback(self.headers.get("Host", "")):
+                self._send_error_json(
+                    403, CODE_FORBIDDEN, "without an api_key only a loopback Host is accepted"
+                )
+                return False
+            return True
 
         def _send_not_found(self) -> None:
             self._send_error_json(404, CODE_NOT_FOUND, "not found")
@@ -194,20 +354,37 @@ def make_handler(
             Health uses the quiet form: it is unauthenticated by design, so a
             probe without a token is not an auth failure worth a warning.
             """
+            self._throttle_wait = 0
             if not api_key:
                 return True
+            addr = self.client_address[0]
+            wait = throttle.retry_after(addr)
+            if wait:
+                self._throttle_wait = wait
+                return False
             header = self.headers.get("Authorization", "")
             if not header.startswith("Bearer "):
                 if not quiet:
                     _log.warning(
                         "auth failure: missing Bearer token from %s", self.address_string()
                     )
+                    self._count_failure(addr)
                 return False
             if not _tokens_match(header[len("Bearer ") :].strip(), api_key):
                 if not quiet:
                     _log.warning("auth failure: invalid token from %s", self.address_string())
+                # Counted even on health: a wrong token there is still a guess.
+                self._count_failure(addr)
                 return False
             return True
+
+        def _count_failure(self, addr: str) -> None:
+            if throttle.record_failure(addr):
+                _log.warning(
+                    "too many auth failures from %s, blocking it for %d seconds",
+                    addr,
+                    int(AUTH_FAIL_WINDOW),
+                )
 
         def _read_json_body(self) -> tuple[Any, bool]:
             """Return ``(payload, ok)``. On failure the error has been sent."""
@@ -225,12 +402,40 @@ def make_handler(
                 )
                 self._send_error_json(413, CODE_BODY_TOO_LARGE, "payload too large")
                 return None, False
-            raw = self.rfile.read(length) if length > 0 else b""
+            try:
+                raw = self._read_body(length) if length > 0 else b""
+            except TimeoutError:
+                self.close_connection = True
+                _log.warning("timed out reading the body from %s", self.address_string())
+                self._send_error_json(408, CODE_INVALID_JSON, "timed out reading the body")
+                return None, False
             try:
                 return (json.loads(raw.decode("utf-8")) if raw else {}), True
-            except ValueError:
+            except (ValueError, RecursionError):
+                # RecursionError: a body nested deeper than the parser allows.
                 self._send_error_json(400, CODE_INVALID_JSON, "invalid json")
                 return None, False
+
+        def _read_body(self, length: int) -> bytes:
+            """Read ``length`` bytes, or raise TimeoutError.
+
+            Each read may idle for ``body_timeout`` seconds, and the whole body
+            has ``body_timeout`` plus the time ``BODY_MIN_RATE`` would need, so a
+            large body on a slow link finishes while a trickle does not.
+            """
+            self.connection.settimeout(body_timeout)
+            deadline = time.monotonic() + body_timeout + length / BODY_MIN_RATE
+            chunks: list[bytes] = []
+            remaining = length
+            while remaining > 0:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("body deadline passed")
+                chunk = self.rfile.read(min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
 
         def _send_path_error(self, exc: Exception) -> None:
             """Map an adder exception onto the error code it earned."""
@@ -250,6 +455,8 @@ def make_handler(
         # -- GET -----------------------------------------------------------
 
         def do_GET(self) -> None:  # noqa: N802
+            if not self._gate():
+                return
             parsed = urlparse(self.path)
             if parsed.path == "/v1/health":
                 self._handle_health()
@@ -309,11 +516,18 @@ def make_handler(
         # -- POST ----------------------------------------------------------
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._gate():
+                return
             if urlparse(self.path).path != "/v1/books":
                 self._send_not_found()
                 return
             if not self._check_auth():
                 self._send_unauthorized()
+                return
+            if not _is_json_content_type(self.headers.get("Content-Type", "")):
+                self._send_error_json(
+                    415, CODE_UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/json"
+                )
                 return
             db = get_db()
             if db is None:
@@ -385,6 +599,8 @@ def make_handler(
         # -- PATCH ---------------------------------------------------------
 
         def do_PATCH(self) -> None:  # noqa: N802
+            if not self._gate():
+                return
             match = _BOOK_ID_PATH.match(urlparse(self.path).path)
             if match is None:
                 self._send_not_found()
@@ -432,7 +648,7 @@ def make_handler(
     return Handler
 
 
-def make_degraded_handler(reason: str) -> type:
+def make_degraded_handler(reason: str, header_timeout: float = DEFAULT_HEADER_TIMEOUT) -> type:
     """A handler for when the real bridge refused to start.
 
     ``server.start`` fails closed when the configured bind host is not
@@ -449,8 +665,8 @@ def make_degraded_handler(reason: str) -> type:
     it exposes nothing the refusal was protecting.
     """
 
-    class DegradedHandler(BaseHTTPRequestHandler):
-        server_version = "BinderyBridge/" + PLUGIN_VERSION
+    class DegradedHandler(_BridgeHandlerBase):
+        timeout = header_timeout
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             _log.debug(format, *args)

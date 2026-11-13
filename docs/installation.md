@@ -31,6 +31,15 @@ registry entry, and `calibre-customize -a` is the supported way to do it.
 5. Open **Preferences, Plugins, User plugins, Bindery Bridge, Customize** and
    set the listen port, bind host, and API key.
 
+Press **Generate** for the API key. A fresh install has no key and a bind host
+of `0.0.0.0`, and the bridge does not listen like that: with no key on a
+network bind it refuses to start and serves a health only page that names the
+reason, so nothing can add books until you set a key. A key shorter than 16
+characters is refused on a network bind in the same way. Bind host `127.0.0.1`
+may run with no key, which is for local use only (the bridge then also refuses
+requests that carry an `Origin` header or a non loopback `Host`), and setting a
+key is recommended even there.
+
 This path requires zero infrastructure and matches Calibre's native plugin UX.
 The GUI file picker must be able to navigate to the zip file, which works on
 bare metal and macOS installs where the browser runs on the same host.

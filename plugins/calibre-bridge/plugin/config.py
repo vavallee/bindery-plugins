@@ -60,7 +60,23 @@ for k, v in DEFAULTS.items():
     prefs.defaults[k] = v
 
 
+def _restrict_file_mode() -> None:
+    """Make the settings file readable by its owner only (it holds the api_key).
+
+    Calibre writes it 0644 inside its config directory. A failure here, or a
+    platform without POSIX modes, must never stop settings from loading or saving.
+    """
+    try:
+        path = getattr(prefs, "file_path", None)
+        if isinstance(path, str) and os.name == "posix" and os.path.exists(path):
+            os.chmod(path, 0o600)
+    # Best effort only; the config directory is already private to the user.
+    except Exception:  # nosec B110
+        pass
+
+
 def load_config() -> dict:
+    _restrict_file_mode()
     return {k: prefs.get(k, v) for k, v in DEFAULTS.items()}
 
 
@@ -326,6 +342,7 @@ class ConfigWidget(QWidget):
         prefs["bindery_url"] = self.bindery_url_input.text().strip()
         prefs["ca_file"] = self.ca_file_input.text().strip()
         prefs["debug_log"] = bool(self.debug_log_input.isChecked())
+        _restrict_file_mode()
         # After the API key is saved, so the log redacts the new one.
         apply_debug_log()
         _notify_saved()

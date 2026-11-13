@@ -28,12 +28,39 @@ Clients SHOULD send a `User-Agent`. Bindery currently sends
 matching the plugin's configured `api_key`. A bad or missing token gets `401`.
 The comparison is constant time (`hmac.compare_digest`).
 
-If `api_key` is empty the server accepts unauthenticated requests. That is only
-reachable on a loopback bind: since 0.5.0 the server refuses to start when the
-bind host is not loopback and no `api_key` is set. Since 0.6.0 that refusal
-serves a degraded health endpoint instead of closing the port, so the cause is
-visible rather than showing up as connection refused. See
-[Degraded mode](#degraded-mode).
+If `api_key` is empty the server accepts unauthenticated requests. That mode
+is for local use only, and setting a key is recommended even on a loopback
+bind. It is only reachable on a loopback bind: since 0.5.0 the server refuses
+to start when the bind host is not loopback and no `api_key` is set. Since
+0.6.0 that refusal serves a degraded health endpoint instead of closing the
+port, so the cause is visible rather than showing up as connection refused.
+See [Degraded mode](#degraded-mode).
+
+A bind that is not loopback also needs a key of at least 16 characters, or the
+server refuses to start the same way. The settings window's **Generate** button
+makes a 64 character key.
+
+Requests the server refuses before it looks at a credential or a body:
+
+- Any request carrying an `Origin` header gets `403 forbidden`, whether or not
+  a key is set. Bindery never sends `Origin`; browsers always do on a cross
+  origin request.
+- With no `api_key`, the host part of the `Host` header must be `localhost`,
+  a `127.0.0.0/8` address or `[::1]`, else `403 forbidden`. A client that
+  reaches a keyless bridge through another name (a reverse proxy, a tunnel) has
+  to set a key. With a key set, `Host` is not restricted.
+- `POST /v1/books` needs `Content-Type: application/json`, else
+  `415 unsupported_media_type`.
+
+Failed bearer attempts are counted per client address. Five failures within a
+minute block that address for a minute: every request from it, a correct key
+included, gets `429 rate_limited` with `Retry-After`. Other addresses are not
+affected. A missing token on `GET /v1/health` does not count.
+
+Each connection has 10 seconds to send its request line and headers, then 30
+seconds of idle time per read of the body (with a total allowance that grows
+with `Content-Length`). At most 32 connections are served at once; a new one
+over the cap gets `503` with `Connection: close`.
 
 `GET /v1/health` is always unauthenticated so clients can probe readiness
 without provisioning credentials, and it never answers `401`. It reports the
@@ -74,8 +101,11 @@ branching on the status alone.
 | `code` | Status | Meaning |
 |---|---|---|
 | `unauthorized` | 401 | Bearer token missing or does not match |
+| `forbidden` | 403 | The request carries an `Origin` header, or there is no `api_key` and `Host` is not a loopback name. Unreleased |
+| `unsupported_media_type` | 415 | `POST /v1/books` without `Content-Type: application/json`. Unreleased |
+| `rate_limited` | 429 | Too many failed bearer attempts from this address; see `Retry-After`. Unreleased |
 | `db_unavailable` | 503 | Library is mid swap, no database right now |
-| `invalid_json` | 400 | Body is not JSON, or `Content-Length` is not a number |
+| `invalid_json` | 400 | Body is not JSON (including nested too deeply), or `Content-Length` is not a number. A body that stalls is answered `408` with this code |
 | `invalid_metadata` | 400 | A request field is missing or the wrong type |
 | `path_not_found` | 400 | There is no file at `path` as the Calibre process sees it |
 | `path_unreadable` | 400 | A file is there but the Calibre process cannot open it (permissions, or a directory). Since 0.6.3 |
@@ -176,7 +206,7 @@ Add a book already present on a filesystem path visible to the Calibre process.
 **Request headers**
 
 - `Authorization: Bearer <api_key>`
-- `Content-Type: application/json`
+- `Content-Type: application/json` (required; any other type gets `415`)
 
 **Request body**
 

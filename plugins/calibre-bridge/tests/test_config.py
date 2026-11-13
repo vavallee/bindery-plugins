@@ -3,11 +3,15 @@
 import importlib
 import importlib.util
 import logging
+import os
 import pathlib
+import stat
 import sys
 import threading
 import types
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 _PLUGIN_DIR = pathlib.Path(__file__).resolve().parent.parent / "plugin"
 
@@ -189,6 +193,75 @@ def test_config_widget_commit_uses_default_for_empty_bind_host():
             config.ConfigWidget.commit(self)
 
         assert real_prefs["bind_host"] == "0.0.0.0"
+    finally:
+        _cleanup(stubs)
+
+
+# ── settings file permissions ─────────────────────────────────────────────────
+
+
+class _FilePrefs(dict):
+    """A prefs stand-in that, like JSONConfig, knows the path it persists to."""
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+
+def _widget_with_key(key):
+    self = MagicMock()
+    self.port_input.value.return_value = 8099
+    self.bind_host_input.text.return_value = "127.0.0.1"
+    self.api_key_input.text.return_value = key
+    return self
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_commit_restricts_the_settings_file_to_its_owner(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        with patch.object(config, "prefs", _FilePrefs(str(path))):
+            config.ConfigWidget.commit(_widget_with_key("k" * 32))
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        _cleanup(stubs)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_load_config_tightens_an_existing_settings_file(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        path.chmod(0o644)
+        with patch.object(config, "prefs", _FilePrefs(str(path))):
+            config.load_config()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        _cleanup(stubs)
+
+
+def test_a_failed_chmod_never_breaks_saving(tmp_path):
+    stubs = _make_qt_stubs()
+    config = _load_config_module(stubs)
+    try:
+        path = tmp_path / "bindery_bridge.json"
+        path.write_text("{}")
+        saved = _FilePrefs(str(path))
+        with (
+            patch.object(config, "prefs", saved),
+            patch.object(config.os, "chmod", side_effect=PermissionError("no")),
+        ):
+            config.ConfigWidget.commit(_widget_with_key("k" * 32))
+        assert saved["api_key"] == "k" * 32
+        # No file on disk at all is also fine.
+        with patch.object(config, "prefs", _FilePrefs(str(tmp_path / "absent.json"))):
+            config.ConfigWidget.commit(_widget_with_key("k" * 32))
     finally:
         _cleanup(stubs)
 
