@@ -125,6 +125,10 @@ class _CollisionNewAPI:
             if identifiers.get("bindery") == bindery_id
         }
 
+    def field_for(self, name, book_id):
+        assert name == "identifiers"
+        return dict(self._identifiers_by_book.get(book_id, {}))
+
     def all_book_ids(self):
         raise AssertionError("production lookup should use search(), not all_book_ids()")
 
@@ -264,6 +268,7 @@ def test_add_book_existing_bindery_identifier_uses_exact_search(tmp_path):
 
     db = MagicMock()
     db.new_api.search.return_value = {9}
+    db.new_api.field_for.return_value = {"bindery": "42"}
 
     book_id, duplicate = adder.add_book(db, str(book), metadata={"identifiers": {"bindery": "42"}})
 
@@ -282,6 +287,7 @@ def test_add_book_existing_bindery_identifier_uses_lowest_match(tmp_path):
 
     db = MagicMock()
     db.new_api.search.return_value = {9, 3}
+    db.new_api.field_for.return_value = {"bindery": "42"}
 
     book_id, duplicate = adder.add_book(db, str(book), metadata={"identifiers": {"bindery": "42"}})
 
@@ -585,6 +591,7 @@ def test_add_book_duplicate_does_not_refresh_gui(tmp_path, monkeypatch):
 
     db = MagicMock()
     db.new_api.search.return_value = {9}
+    db.new_api.field_for.return_value = {"bindery": "42"}
     gui = MagicMock()
     on_added = MagicMock()
 

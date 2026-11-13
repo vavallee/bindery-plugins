@@ -45,8 +45,19 @@ calibreImage:
 releaseUrlTemplate: "https://github.com/vavallee/bindery-plugins/releases/download/v-calibre-bridge-{{ .Values.pluginVersion }}/calibre-bridge-v{{ .Values.pluginVersion }}.zip"
 # The release publishes <zip>.sha256 next to the zip. Verification is on by
 # default; turning it off downloads an unverified artefact into a persistent
-# volume, so only do that against a mirror you control.
+# volume, so only do that against a mirror you control. The sidecar must name
+# exactly the zip that was downloaded, or the pod fails.
+#
+# The sidecar comes from the same place as the zip, so on its own it catches
+# a corrupt download, not a replaced release.
 verifyChecksum: true
+# pluginSha256 pins the expected SHA-256 of the zip, 64 hex digits. When set,
+# the init container fails unless the downloaded zip matches it, whatever the
+# sidecar says. Recommended for production. Get the value from the release's
+# <zip>.sha256 file (the hash before the file name) and check it against the
+# hash in the release notes, ideally from a second machine. It has to be
+# changed together with pluginVersion.
+pluginSha256: ""
 
 # networkPolicy: opt-in traffic restriction for the calibre pod.
 #

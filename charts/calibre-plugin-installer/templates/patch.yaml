@@ -1,5 +1,6 @@
 {{- include "calibre-plugin-installer.checkRemovedValues" . -}}
 {{- $zip := include "calibre-plugin-installer.zipName" . -}}
+{{- $pinned := include "calibre-plugin-installer.pluginSha256" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,6 +29,9 @@ spec:
               value: {{ $zip | quote }}
             - name: VERIFY_CHECKSUM
               value: {{ .Values.verifyChecksum | quote }}
+            # Expected SHA-256 of the zip, from values. Empty means not pinned.
+            - name: PLUGIN_SHA256
+              value: {{ $pinned | quote }}
           command:
             - sh
             - -c
@@ -35,14 +39,40 @@ spec:
               set -eu
               cd /bindery-stage
               echo "Downloading Bindery Bridge ${PLUGIN_VERSION} from ${PLUGIN_URL}"
-              curl --retry 5 --retry-delay 4 --retry-connrefused --connect-timeout 10 \
+              curl --proto '=https' --proto-redir '=https' \
+                --retry 5 --retry-delay 4 --retry-connrefused --connect-timeout 10 \
                 --max-time 120 --fail -sSL "$PLUGIN_URL" -o "$PLUGIN_ZIP"
+              # A hash from values does not come from the download origin, so a
+              # swapped release asset cannot also swap this. Fails closed.
+              if [ -n "$PLUGIN_SHA256" ]; then
+                actual=$(sha256sum "$PLUGIN_ZIP" | cut -d ' ' -f 1)
+                if [ "$actual" != "$PLUGIN_SHA256" ]; then
+                  echo "ERROR: ${PLUGIN_ZIP} does not match pluginSha256"
+                  echo "expected ${PLUGIN_SHA256}"
+                  echo "got      ${actual}"
+                  exit 1
+                fi
+                echo "pluginSha256 matched for ${PLUGIN_ZIP}"
+              fi
               if [ "$VERIFY_CHECKSUM" = "true" ]; then
-                curl --retry 5 --retry-delay 4 --retry-connrefused --connect-timeout 10 \
+                curl --proto '=https' --proto-redir '=https' \
+                  --retry 5 --retry-delay 4 --retry-connrefused --connect-timeout 10 \
                   --max-time 60 --fail -sSL "${PLUGIN_URL}.sha256" -o "${PLUGIN_ZIP}.sha256"
-                sha256sum -c "${PLUGIN_ZIP}.sha256"
+                # The sidecar must be one line naming exactly this zip.
+                # sha256sum -c alone would check whatever file it names.
+                if [ "$(grep -c '' "${PLUGIN_ZIP}.sha256")" != "1" ]; then
+                  echo "ERROR: ${PLUGIN_ZIP}.sha256 is not a single line"
+                  exit 1
+                fi
+                read -r sidecar_sum sidecar_name < "${PLUGIN_ZIP}.sha256" || true
+                sidecar_name=${sidecar_name#\*}
+                if [ "$sidecar_name" != "$PLUGIN_ZIP" ]; then
+                  echo "ERROR: ${PLUGIN_ZIP}.sha256 names a different file than ${PLUGIN_ZIP}"
+                  exit 1
+                fi
+                printf '%s  %s\n' "$sidecar_sum" "$PLUGIN_ZIP" | sha256sum -c -
                 echo "Checksum verified for ${PLUGIN_ZIP}"
-              else
+              elif [ -z "$PLUGIN_SHA256" ]; then
                 echo "WARNING: checksum verification disabled, ${PLUGIN_ZIP} is unverified"
               fi
           securityContext:
@@ -50,6 +80,8 @@ spec:
             runAsUser: {{ .Values.runAsUser }}
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
               drop: ["ALL"]
           resources:
@@ -98,6 +130,8 @@ spec:
             runAsUser: {{ .Values.runAsUser }}
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
               drop: ["ALL"]
           resources:

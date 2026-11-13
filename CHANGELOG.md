@@ -30,6 +30,17 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 - **Per address connection cap.** One client address may hold at most 8 of the
   32 connections at once (an IPv6 address counts by its /64), so a single source
   cannot take every slot. Further connections from it get `503`.
+- Identifiers with unusual characters, such as control characters, quotes or a
+  leading dot, are no longer matched when Bindery looks for a book that is
+  already in Calibre.
+- The Helm chart can pin the plugin zip's SHA-256 with `pluginSha256`. It also
+  checks the file name in the `.sha256` sidecar, restricts curl to https and
+  sets a seccomp profile on its init containers.
+- A plain http `releaseUrlTemplate` mirror no longer works with the Helm chart.
+
+#### Fixed
+
+- A failed acknowledgement is retried without downloading the book again.
 
 ### [0.8.3] - 2026-11-12
 

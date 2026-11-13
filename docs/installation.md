@@ -176,9 +176,10 @@ Calibre `Deployment`. The patch injects two init containers that run before
 Calibre starts:
 
 1. `bindery-bridge-fetch` downloads the release zip and its `.sha256` into a
-   scratch `emptyDir` and runs `sha256sum -c`. It uses a digest pinned
-   `curlimages/curl` image and is the only container here that needs network
-   access.
+   scratch `emptyDir` and verifies the zip (see "Pin the zip hash" below). It
+   uses a digest pinned `curlimages/curl` image and is the only container here
+   that needs network access. It fetches over https only, and refuses a
+   redirect to anything else.
 2. `bindery-bridge-register` runs `calibre-customize -a` against the verified
    zip, which writes the registry entry in `customize.py.json` and copies the
    zip into Calibre's plugins directory. It then runs `calibre-customize -l`
@@ -213,12 +214,44 @@ Set `calibreImage` to the image your Calibre `Deployment` already runs.
 3. `kubectl apply -f application.yaml`, or let ArgoCD pick it up through your
    ApplicationSet.
 
+### Pin the zip hash
+
+The `.sha256` file is published next to the zip, so it comes from the same
+place. It catches a corrupt download, but anyone who can replace the release
+files can replace both. The chart also requires the sidecar to be a single
+line naming exactly the zip it downloaded.
+
+For production, set `pluginSha256` to the expected SHA-256 of the zip. The
+init container then fails unless the downloaded zip matches it, whatever the
+sidecar says, so the check no longer depends on the download origin:
+
+```yaml
+pluginVersion: "0.8.3"
+pluginSha256: "<64 hex digits>"
+```
+
+To get the value, open the release page and read the `.sha256` file (the hash
+before the file name), and compare it with the SHA-256 in the release notes.
+Do this once, from your own machine, when you choose the version; then commit
+the value with the version. Or hash a zip you downloaded and checked yourself:
+
+```bash
+sha256sum calibre-bridge-vX.Y.Z.zip
+```
+
+Change `pluginSha256` whenever you change `pluginVersion`. A mismatch stops
+the pod, which is the point. A value that is not 64 hex digits fails the
+render. Leave it empty to keep the sidecar check alone.
+
+A custom `releaseUrlTemplate` must be an https URL. A plain http mirror no
+longer works, and neither does a redirect from https to http.
+
 ### Upgrades
 
-Bump `pluginVersion` in the chart's `values.yaml` or in the ApplicationSet
-override (and `targetRevision` beside it), merge, and let ArgoCD sync. The
-init containers re-download and re-register the matching `.zip` on the next
-Calibre pod restart.
+Bump `pluginVersion` (and `pluginSha256`, if you pin it) in the chart's
+`values.yaml` or in the ApplicationSet override (and `targetRevision` beside
+it), merge, and let ArgoCD sync. The init containers re-download and
+re-register the matching `.zip` on the next Calibre pod restart.
 
 ### Restricting who can reach the bridge
 

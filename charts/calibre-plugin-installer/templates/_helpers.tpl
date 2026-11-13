@@ -27,3 +27,16 @@ would leave an operator believing the old no-op install still works.
 {{ fail "pluginDestDir was removed in chart 0.2.0. Calibre reads its plugin registry from customize.py.json, not from the plugins directory, so dropping a zip there installed nothing. Set calibreConfigDir to Calibre's config directory instead, typically /config/.config/calibre." }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The pinned zip hash, lower case, or "" when pluginSha256 is not set. A value
+that is not 64 hex digits fails the render: a typo must not turn into a pin
+that can never match or, worse, into no pin at all.
+*/}}
+{{- define "calibre-plugin-installer.pluginSha256" -}}
+{{- $h := (default "" .Values.pluginSha256) | toString | trim | lower -}}
+{{- if and $h (not (regexMatch "^[0-9a-f]{64}$" $h)) -}}
+{{ fail "pluginSha256 must be 64 hex digits, the SHA-256 of the release zip. Copy it from the release's .sha256 file." }}
+{{- end -}}
+{{- $h -}}
+{{- end -}}

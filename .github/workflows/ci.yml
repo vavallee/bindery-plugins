@@ -33,6 +33,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+      # tests/test_chart_installer.py renders the chart, and fails without helm
+      # on CI rather than skipping. Same pin as the IaC job in security.yml.
+      - name: Install Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.14.4
+      - name: Show the Helm version
+        run: helm version --short
       # scripts/ runs on the CI runner, not inside Calibre, so it is tested on
       # the runner interpreter rather than the Calibre matrix.
       - name: Run tests
