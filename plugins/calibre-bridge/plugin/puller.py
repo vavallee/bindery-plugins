@@ -105,6 +105,11 @@ class PullStats:
     paused: bool = False
     acks: list[dict[str, Any]] = field(default_factory=list)
 
+    @property
+    def failed(self) -> int:
+        """Deliveries this pass could not deliver: refused, unacked or unusable."""
+        return self.nacked + self.ack_failed + self.skipped
+
 
 class _Stop(Exception):
     """Raised inside a pass to end it early without an error."""
@@ -261,10 +266,11 @@ class PullWorker:
             status.set_pull(detail=stats.status)
         if stats.error:
             status.set_pull(last_error=stats.error, last_error_at=self._clock())
-        elif stats.completed:
-            # Bindery answered and nothing went wrong, so an error from an
-            # earlier pass no longer describes anything. It used to stay in
-            # the settings window until Calibre restarted.
+        elif stats.completed and not stats.failed:
+            # Bindery answered and every delivery went through, so an error
+            # from an earlier pass no longer describes anything. A pass that
+            # nacked or skipped a delivery proves nothing of the kind, so it
+            # leaves the error and the last success alone.
             status.set_pull(last_error="", last_error_at=0.0, last_success=self._clock())
         _log.debug(
             "pull pass: %s (listed=%d added=%d format_added=%d already=%d nacked=%d "
@@ -454,11 +460,13 @@ class PullWorker:
     def _done_status(stats: PullStats) -> str:
         delivered = stats.added + stats.format_added + stats.already
         waiting = stats.waiting or 0
+        failed = f", {stats.failed} failed" if stats.failed else ""
         if stats.listed == 0:
             if waiting:
                 return f"Connected to Bindery; {waiting} waiting"
             return "Connected to Bindery; nothing waiting"
         done = f"Connected to Bindery; {delivered} of {stats.listed} delivered in the last pass"
+        done += failed
         return f"{done}, {waiting} waiting" if waiting else done
 
     @staticmethod

@@ -9,7 +9,10 @@ plugin's own logger namespace and takes it off again.
 Rules this module keeps:
 
 * Only :data:`LOGGER_NAME` is touched. The root logger and Calibre's own
-  loggers keep their handlers and their levels.
+  loggers keep their handlers and their levels. While the log is on, the
+  plugin logger does not propagate (its DEBUG and INFO lines would reach an
+  ancestor handler otherwise); its level and propagate flag are restored when
+  it is turned off.
 * :func:`apply` never raises. A log that cannot be opened must not stop
   ``genesis`` or a settings save; the reason is kept for the settings window.
 * The API key never reaches the file. Nothing in the plugin logs it today, and
@@ -120,51 +123,75 @@ class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
 
 
 class _KeepStderrWarnings(logging.Handler):
-    """Keep warnings on stderr while the file handler is attached.
+    """Keep warnings where they went before the file handler was attached.
 
     Python prints WARNING and above to stderr only when no handler at all is
     found for a record. Attaching the file handler would end that, and a user
     watching ``calibre-debug -g`` would stop seeing the plugin's warnings the
-    moment they turned the debug log on. When something else already handles
-    the record (a handler on the root logger, say) this does nothing.
+    moment they turned the debug log on. The plugin logger also stops
+    propagating while the log is on, so DEBUG and INFO lines do not reach a
+    handler on an ancestor logger. A warning is therefore handed to those
+    handlers here, as propagation would have, and falls back to the last
+    resort stderr handler when there are none.
     """
 
     def emit(self, record: logging.LogRecord) -> None:
-        node: logging.Logger | None = logging.getLogger(LOGGER_NAME)
+        logger = logging.getLogger(LOGGER_NAME)
+        if any(handler not in _handlers for handler in logger.handlers):
+            return
+        found = False
+        node = logger.parent
         while node is not None:
-            if any(handler not in _handlers for handler in node.handlers):
-                return
+            for handler in node.handlers:
+                found = True
+                if record.levelno >= handler.level:
+                    handler.handle(record)
             node = node.parent if node.propagate else None
+        if found:
+            return
         last = logging.lastResort
         if last is not None and record.levelno >= last.level:
             last.handle(record)
 
 
+# The level and propagate flag the plugin logger had before the file handler
+# was attached, restored on detach. None while nothing is attached.
+_saved: tuple[int, bool] | None = None
+
+
 def _detach() -> None:
+    global _saved
     logger = logging.getLogger(LOGGER_NAME)
     for handler in list(_handlers):
         logger.removeHandler(handler)
         with contextlib.suppress(Exception):
             handler.close()
-    if _handlers:
-        # Back to inheriting the level, which is how the logger started.
-        logger.setLevel(logging.NOTSET)
+    if _saved is not None:
+        # Somebody else may have set these before we attached.
+        logger.setLevel(_saved[0])
+        logger.propagate = _saved[1]
+        _saved = None
     _handlers.clear()
 
 
 def _attach(path: str, secrets: Iterable[str]) -> None:
+    global _saved
     handler = _PrivateRotatingFileHandler(
         path, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8"
     )
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(_RedactingFormatter(secrets))
     logger = logging.getLogger(LOGGER_NAME)
+    _saved = (logger.level, logger.propagate)
     for added in (handler, _KeepStderrWarnings(logging.WARNING)):
         logger.addHandler(added)
         _handlers.append(added)
     # The handler level is not enough: a logger drops DEBUG before any
     # handler sees it unless its own level lets it through.
     logger.setLevel(logging.DEBUG)
+    # With the level at DEBUG, DEBUG and INFO records would otherwise reach a
+    # handler on an ancestor logger that never asked for them.
+    logger.propagate = False
 
 
 def apply(enabled: bool, secrets: Iterable[str] = (), path: str = "") -> str:

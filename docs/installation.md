@@ -260,7 +260,10 @@ lines update every few seconds while the window is open:
 Start Calibre from a terminal with `calibre-debug -g`. The plugin prints its
 warnings and errors there. That includes every step of the book list refresh
 that failed, on a line starting with `Calibre GUI refresh:`, which is the
-place to look when a delivered book only shows up after Ctrl+R.
+place to look when a delivered book only shows up after Ctrl+R. Warnings keep
+appearing there while the debug log is on. That stderr copy is not redacted,
+only the log file is, so do not paste raw `calibre-debug -g` output into a
+public issue without checking it for your API key first.
 
 ### The debug log
 

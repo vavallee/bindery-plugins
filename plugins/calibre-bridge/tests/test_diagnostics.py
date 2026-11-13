@@ -242,6 +242,72 @@ def test_warnings_still_reach_stderr_while_the_log_is_on(debuglog, log_file, mon
     assert seen == ["handled elsewhere"], "exactly once, by the root handler"
 
 
+class _Collector(logging.Handler):
+    def __init__(self, level=logging.NOTSET):
+        super().__init__(level)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append((record.levelname, record.getMessage()))
+
+
+def test_debug_lines_do_not_leak_to_a_root_handler_while_the_log_is_on(
+    debuglog, log_file, monkeypatch
+):
+    root = logging.getLogger()
+    collector = _Collector()
+    monkeypatch.setattr(root, "handlers", [collector])
+    namespace = logging.getLogger(_NAMESPACE)
+    assert namespace.propagate is True
+    logger = logging.getLogger(f"{_PKG}.adder")
+
+    debuglog.apply(True, path=str(log_file))
+    assert namespace.propagate is False
+    logger.debug("a detail")
+    logger.info("a summary")
+    assert collector.records == []
+    assert "a detail" in _read(log_file)
+
+    # A warning still reaches the root handler, once, as it did before.
+    logger.warning("a problem")
+    assert collector.records == [("WARNING", "a problem")]
+
+    debuglog.apply(False)
+    assert namespace.propagate is True
+    assert namespace.level == logging.NOTSET
+    collector.records.clear()
+    logger.warning("after")
+    logger.info("not at the default level")
+    assert collector.records == [("WARNING", "after")]
+
+
+def test_a_root_handler_keeps_its_own_level_for_warnings(debuglog, log_file, monkeypatch):
+    errors_only = _Collector(logging.ERROR)
+    monkeypatch.setattr(logging.getLogger(), "handlers", [errors_only])
+    debuglog.apply(True, path=str(log_file))
+    logger = logging.getLogger(f"{_PKG}.adder")
+    logger.warning("below the handler's level")
+    logger.error("at the handler's level")
+    assert errors_only.records == [("ERROR", "at the handler's level")]
+
+
+def test_turning_the_log_off_restores_the_level_and_propagation_it_found(debuglog, log_file):
+    namespace = logging.getLogger(_NAMESPACE)
+    namespace.setLevel(logging.INFO)
+    namespace.propagate = False
+    try:
+        debuglog.apply(True, path=str(log_file))
+        assert namespace.level == logging.DEBUG
+        # Turning it on again must not remember our own DEBUG as the old level.
+        debuglog.apply(True, path=str(log_file))
+        debuglog.apply(False)
+        assert namespace.level == logging.INFO
+        assert namespace.propagate is False
+    finally:
+        namespace.setLevel(logging.NOTSET)
+        namespace.propagate = True
+
+
 # ── the debug log: no credentials ────────────────────────────────────────────
 
 
@@ -455,6 +521,44 @@ def test_the_last_error_stays_while_bindery_has_not_answered_again(pull_ns, fake
     assert "hello: HTTP 503: starting up" in summary
 
 
+def test_a_pass_that_nacks_every_delivery_keeps_the_last_error(pull_ns, fake_bindery):
+    """No stats.error here: the refusal is a clean nack. It still proves
+    nothing about recovery."""
+    harness = Harness(pull_ns, fake_bindery.url)
+    clock = iter([1_700_000_000.0, 1_700_000_300.0])
+    harness.worker._clock = lambda: next(clock)
+    fake_bindery.override("hello", 503, {"error": "starting up"})
+    harness.run()
+    fake_bindery.add("d1", fmt="../evil")
+
+    stats = harness.run()
+
+    assert (stats.nacked, stats.error, stats.completed) == (1, "", True)
+    state = pull_ns.status.pull_current()
+    assert state["last_error"] == "hello: HTTP 503: starting up"
+    assert state["last_success"] == 0.0
+    summary = pull_ns.status.pull_summary(now=1_700_000_310.0)
+    assert "1 failed" in summary
+    assert "Last error (" in summary
+    assert "Last successful check" not in summary
+
+
+def test_a_pass_that_nacks_does_not_report_a_successful_check(pull_ns, fake_bindery):
+    fake_bindery.add("d1", fmt="../evil")
+    harness = Harness(pull_ns, fake_bindery.url)
+
+    harness.run()
+
+    assert pull_ns.status.pull_current()["last_success"] == 0.0
+    summary = pull_ns.status.pull_summary()
+    assert "0 of 1 delivered in the last pass, 1 failed" in summary
+    assert "Last successful check" not in summary
+
+    # A clean pass afterwards is a success again.
+    assert harness.run().failed == 0
+    assert pull_ns.status.pull_current()["last_success"] > 0
+
+
 def test_the_pull_status_shows_how_many_are_waiting(pull_ns, fake_bindery):
     fake_bindery.add("d1", bindery="7")
     fake_bindery.add("d2", bindery="8", title="The Lathe of Heaven")
@@ -462,11 +566,14 @@ def test_the_pull_status_shows_how_many_are_waiting(pull_ns, fake_bindery):
     harness = Harness(pull_ns, fake_bindery.url)
 
     stats = harness.run()
-    assert stats.status == "Connected to Bindery; 1 of 2 delivered in the last pass, 1 waiting"
+    assert (
+        stats.status
+        == "Connected to Bindery; 1 of 2 delivered in the last pass, 1 failed, 1 waiting"
+    )
     # Two were due, one arrived, and the listing after that ack agrees.
     assert (stats.listed, stats.pending, stats.waiting) == (2, 1, 1)
     assert pull_ns.status.pull_summary().startswith(
-        "Connected to Bindery; 1 of 2 delivered in the last pass, 1 waiting. "
+        "Connected to Bindery; 1 of 2 delivered in the last pass, 1 failed, 1 waiting. "
     )
 
     stats = harness.run()
@@ -488,7 +595,7 @@ def test_a_refused_delivery_is_not_counted_as_waiting(pull_ns, fake_bindery):
     fake_bindery.add("d1", fmt="../evil")
     stats = Harness(pull_ns, fake_bindery.url).run()
     assert (stats.nacked, stats.pending, stats.waiting) == (1, 1, 0)
-    assert stats.status == "Connected to Bindery; 0 of 1 delivered in the last pass"
+    assert stats.status == "Connected to Bindery; 0 of 1 delivered in the last pass, 1 failed"
 
 
 def test_the_pull_state_has_no_unused_fields(plugin_modules):
