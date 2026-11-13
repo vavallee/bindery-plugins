@@ -1,4 +1,5 @@
 import contextlib
+import inspect
 import logging
 import ntpath
 import os
@@ -264,7 +265,7 @@ def add_book_detailed(
             raise _copy_failed(requested_path, exc) from exc
         raise
     if ids:
-        _schedule_gui_refresh(gui, len(ids), on_added)
+        _schedule_gui_refresh(gui, len(ids), on_added, int(ids[0]))
         return AddResult(int(ids[0]), False, cover_applied)
 
     if bindery_id:
@@ -746,8 +747,26 @@ def _schedule_gui_row_refresh(
         _log.debug("Calibre GUI row refresh dispatch failed: %s", exc)
 
 
+def _accepts_book_id(on_added: Callable[..., Any]) -> bool:
+    """True when ``on_added`` can be called as ``on_added(count, book_id)``.
+
+    ``on_added`` has been a one argument callable since 0.6.3 and callers that
+    predate the book id still pass one. The Dispatcher the action builds takes
+    ``*args``. A callable whose signature cannot be read is treated as the old
+    one argument kind.
+    """
+    try:
+        inspect.signature(on_added).bind(0, 0)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _schedule_gui_refresh(
-    gui: Any | None, count: int, on_added: Callable[[int], Any] | None = None
+    gui: Any | None,
+    count: int,
+    on_added: Callable[..., Any] | None = None,
+    book_id: int = 0,
 ) -> None:
     """Make ``count`` freshly-added books show up in the Calibre GUI (#1).
 
@@ -765,10 +784,18 @@ def _schedule_gui_refresh(
     ``QTimer.singleShot(0, ...)``, which queues onto the calling thread's event
     loop. The HTTP worker thread has none, so on real Calibre (checked on 9.14)
     the timer never fires and the view is not refreshed. Do not rely on it.
+
+    ``book_id`` is the book this add created. It is handed to the refresh so the
+    refresh can repaint that row even when another delivery's refresh already
+    registered it (see :func:`show_new_books`). ``on_added`` only gets it when
+    it accepts a second argument.
     """
     if on_added is not None:
         try:
-            on_added(count)
+            if book_id and _accepts_book_id(on_added):
+                on_added(count, book_id)
+            else:
+                on_added(count)
         except Exception as exc:
             _log.debug("Calibre GUI refresh dispatch failed: %s", exc)
         return
@@ -784,7 +811,7 @@ def _schedule_gui_refresh(
             return
 
     def _refresh() -> None:
-        show_new_books(gui, count)
+        show_new_books(gui, count, book_id)
 
     QTimer.singleShot(0, _refresh)
 
@@ -871,7 +898,20 @@ def _announce_rows(gui: Any, model: Any, count: int) -> None:
         _full_refresh(model)
 
 
-def show_new_books(gui: Any, count: int) -> None:
+def _repaint_row(gui: Any, model: Any, book_id: int) -> None:
+    """Repaint one row the view already has. Never raises.
+
+    A failure falls back to a full refresh, the same as every other step here.
+    """
+    try:
+        model.refresh_ids([book_id])
+        _recount_tags(gui)
+    except Exception as exc:
+        _log.debug("Calibre GUI row refresh failed, doing a full refresh: %s", exc)
+        _full_refresh(model)
+
+
+def show_new_books(gui: Any, count: int, book_id: int = 0) -> None:
     """Make freshly added books appear in the library list. GUI thread only.
 
     ``gui`` is read now, not when the plugin was set up, so it does not matter
@@ -880,6 +920,14 @@ def show_new_books(gui: Any, count: int) -> None:
     ``init_library_view_mixin``). Never raises: a refresh that fails must not
     turn a delivered book into a failed delivery. ``count`` is only logged; the
     rows to show come from :func:`_register_new_rows`.
+
+    ``book_id`` is the book whose add queued this refresh, or 0 when unknown.
+    ``Cache.add_books`` is not atomic: ``create_book_entry`` and ``add_format``
+    take separate locks. With two deliveries in flight, the first one's refresh
+    can register the second one's id while its format is still being added, and
+    the second one's own refresh then finds nothing missing. The row is in the
+    view but was drawn without its format, so when the comparison did not add
+    ``book_id`` it is repainted here.
     """
     try:
         model = gui.library_view.model()
@@ -895,6 +943,8 @@ def show_new_books(gui: Any, count: int) -> None:
     _log.debug("Calibre GUI refresh: %d added, %d new rows in the view", count, len(added))
     if added:
         _announce_rows(gui, model, len(added))
+    if book_id and book_id not in added:
+        _repaint_row(gui, model, book_id)
 
 
 def redraw_book(gui: Any, book_id: int) -> None:
@@ -920,12 +970,7 @@ def redraw_book(gui: Any, book_id: int) -> None:
         _announce_rows(gui, model, len(added))
     if book_id in added:
         return
-    try:
-        model.refresh_ids([book_id])
-        _recount_tags(gui)
-    except Exception as exc:
-        _log.debug("Calibre GUI row refresh failed, doing a full refresh: %s", exc)
-        _full_refresh(model)
+    _repaint_row(gui, model, book_id)
 
 
 def apply_bindery_metadata(mi: Any, metadata: dict[str, Any] | None) -> None:

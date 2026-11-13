@@ -369,6 +369,62 @@ def test_two_refreshes_for_two_adds_show_each_book_once(adder, plugin, tmp_path)
     assert gui.library_view.model().consistent
 
 
+def test_a_row_another_refresh_registered_is_still_repainted(adder, plugin, tmp_path):
+    """Cache.add_books is not atomic: delivery A's refresh can register B's row.
+
+    B's id is then in the view when B's own refresh runs, so the comparison
+    finds nothing missing. The row was registered while B was still adding its
+    format, so it has to be repainted or its Formats column stays stale.
+    """
+    gui = make_gui()
+    action = _genesis(plugin, adder, gui)
+    db = gui.current_db
+    calls: list[tuple[int, ...]] = []
+    _push(adder, db, tmp_path, lambda *args: calls.append(args), name="a.epub")
+    _push(adder, db, tmp_path, lambda *args: calls.append(args), name="b.epub")
+    id_a, id_b = sorted(db.new_api.all_book_ids())
+    assert calls == [(1, id_a), (1, id_b)]
+    model = gui.library_view.model()
+
+    action._refresh_gui(*calls[0])  # A's refresh registers both ids
+    assert model.announced == [2]
+    assert model.refreshed_ids == []
+
+    action._refresh_gui(*calls[1])  # B's finds nothing missing
+
+    assert model.announced == [2]
+    assert model.refreshed_ids == [[id_b]]
+    assert visible(gui) == ["Stub Title", "Stub Title"]
+    assert model.consistent
+
+
+def test_the_dispatcher_carries_the_book_id_to_the_refresh(adder, plugin, tmp_path):
+    gui = make_gui()
+    action = _genesis(plugin, adder, gui)
+    db = gui.current_db
+
+    result = _push(adder, db, tmp_path, action._on_added)
+
+    assert result.book_id == 1
+    assert gui.library_view.model().announced == [1]
+    # The row was new, so registering it is the repaint: no second one.
+    assert gui.library_view.model().refreshed_ids == []
+
+
+def test_a_refresh_that_cannot_repaint_the_row_does_a_full_refresh(adder, plugin):
+    db = FakeLegacyDB()
+    book_id = db.new_api.seed("Existing")
+    db.data = FakeView(db.new_api)
+    gui = make_gui(db)
+    action = _genesis(plugin, adder, gui)
+    model = gui.library_view.model()
+    model.refresh_ids = MagicMock(side_effect=RuntimeError("model gone"))
+
+    action._refresh_gui(1, book_id)
+
+    assert model.full_refreshes == 1
+
+
 def test_a_book_the_view_already_has_is_not_shown_twice(adder, plugin):
     """If a future Calibre registers Cache adds itself, this must go quiet."""
     gui = make_gui()

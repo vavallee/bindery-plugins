@@ -78,18 +78,22 @@ class BinderyBridgeAction(InterfaceAction):
     def _get_gui(self) -> Any:
         return self.gui
 
-    def _refresh_gui(self, count: int) -> None:
+    def _refresh_gui(self, count: int, book_id: int = 0) -> None:
         """Show books that were just added. Runs on the GUI thread.
 
         ``self.gui.library_view`` is looked up now, never kept from ``genesis``,
         and the work is in ``adder.show_new_books``: the plugin adds through the
         database cache, which does not tell the library view about new books, so
         they have to be registered with it before the list can show them.
+        ``book_id`` is the book that queued this refresh, when the adder knows it.
         """
         try:
             from calibre_plugins.bindery_bridge.plugin import adder
 
-            adder.show_new_books(self.gui, count)
+            if book_id:
+                adder.show_new_books(self.gui, count, book_id)
+            else:
+                adder.show_new_books(self.gui, count)
         except Exception as exc:
             _log.debug("Calibre GUI refresh failed: %s", exc)
 
