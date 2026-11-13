@@ -7,6 +7,23 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ## calibre-bridge
 
+### [0.8.3] - 2026-11-12
+
+#### Fixed
+
+- **New books show up in Calibre's book list without Ctrl+R.** The bridge adds
+  books through Calibre's database cache, which does not tell the library list
+  about them. 0.6.3 announced the new rows to the list without registering the
+  books, so the list never grew and a search could not find them until Ctrl+R
+  rebuilt it
+  ([bindery-plugins#30](https://github.com/vavallee/bindery-plugins/issues/30),
+  [#31](https://github.com/vavallee/bindery-plugins/pull/31)). The refresh now
+  registers each new book with the library view first, the way Calibre does for
+  books added by another writer, then announces it, and falls back to a full
+  refresh if that fails. A delivery that arrives while another one is still
+  adding its formats also repaints its own row, so the Formats column is not
+  left stale. Reported by sladester.
+
 ### [0.8.2] - 2026-11-04
 
 #### Fixed

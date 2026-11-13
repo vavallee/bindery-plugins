@@ -296,7 +296,7 @@ def test_health_hides_the_library_without_a_token(bridge_handlers, serve_bridge)
     status, payload, _ = bridge.call("GET", "/v1/health")
     assert status == 200
     assert payload["library"] == ""
-    assert payload["plugin_version"] == "0.8.2"
+    assert payload["plugin_version"] == "0.8.3"
     assert "error_codes" in payload["capabilities"]
 
 
