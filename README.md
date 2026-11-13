@@ -117,6 +117,13 @@ Customize** using the Calibre web GUI at port 8080.
 For a GitOps and ArgoCD approach using a Helm init container, see
 [`docs/installation.md`](docs/installation.md).
 
+### When something does not work
+
+The plugin settings show what the push server and pull mode are doing right
+now, and a **Write debug log** checkbox records everything to a file you can
+attach to a bug report. See
+[Troubleshooting](docs/installation.md#troubleshooting).
+
 ## Development
 
 - Python 3.10 or newer. Install the pinned tooling with

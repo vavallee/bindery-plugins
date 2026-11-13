@@ -22,7 +22,11 @@ def _gui_thread_dispatcher(fn: Callable[[int], None]) -> Callable[[int], None] |
     try:
         from calibre.gui2 import Dispatcher
     except Exception as exc:
-        _log.debug("calibre.gui2.Dispatcher unavailable, no GUI refresh: %s", exc)
+        _log.warning(
+            "Calibre GUI refresh: calibre.gui2.Dispatcher unavailable, new books "
+            "will not show until Ctrl+R: %s",
+            exc,
+        )
         return None
     return Dispatcher(fn)  # type: ignore[no-any-return]
 
@@ -54,6 +58,8 @@ class BinderyBridgeAction(InterfaceAction):
         self._BridgeServer = BridgeServer
         self._load_config = load_config
         self._status = status
+        # First, so everything below is in the file when the log is on.
+        self._apply_debug_log()
         self._server = None
         self._start_lock = threading.Lock()
         # Built here because genesis runs on the GUI thread, which is the
@@ -95,7 +101,7 @@ class BinderyBridgeAction(InterfaceAction):
             else:
                 adder.show_new_books(self.gui, count)
         except Exception as exc:
-            _log.debug("Calibre GUI refresh failed: %s", exc)
+            _log.warning("Calibre GUI refresh: showing new books failed: %s", exc)
 
     def _refresh_gui_row(self, book_id: int) -> None:
         """Redraw a book that was already in the library. Runs on the GUI thread.
@@ -110,7 +116,22 @@ class BinderyBridgeAction(InterfaceAction):
 
             adder.redraw_book(self.gui, book_id)
         except Exception as exc:
-            _log.debug("Calibre GUI row refresh failed: %s", exc)
+            _log.warning("Calibre GUI refresh: redrawing book %s failed: %s", book_id, exc)
+
+    def _apply_debug_log(self) -> None:
+        """Open the debug log when the setting is on. Never fails genesis.
+
+        A log that cannot be opened is reported in the settings window's
+        Status line, and by this warning for anyone watching stderr.
+        """
+        try:
+            from calibre_plugins.bindery_bridge.plugin.config import apply_debug_log
+
+            problem = apply_debug_log()
+        except Exception as exc:
+            problem = str(exc) or type(exc).__name__
+        if problem:
+            _log.warning("calibre-bridge debug log could not be opened: %s", problem)
 
     def _toast(self, message: str, timeout_ms: int = 5000) -> None:
         """Show a short message in Calibre's status bar, never raising.

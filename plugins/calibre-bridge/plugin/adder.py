@@ -744,7 +744,9 @@ def _schedule_gui_row_refresh(
     try:
         on_updated(book_id)
     except Exception as exc:
-        _log.debug("Calibre GUI row refresh dispatch failed: %s", exc)
+        _log.warning(
+            "Calibre GUI refresh: handing book %d to the GUI thread failed: %s", book_id, exc
+        )
 
 
 def _accepts_book_id(on_added: Callable[..., Any]) -> bool:
@@ -797,7 +799,9 @@ def _schedule_gui_refresh(
             else:
                 on_added(count)
         except Exception as exc:
-            _log.debug("Calibre GUI refresh dispatch failed: %s", exc)
+            _log.warning(
+                "Calibre GUI refresh: handing the refresh to the GUI thread failed: %s", exc
+            )
         return
     if gui is None:
         return
@@ -807,7 +811,7 @@ def _schedule_gui_refresh(
         try:
             from PyQt5.Qt import QTimer  # pre-Qt6 Calibre
         except Exception as exc:
-            _log.debug("no QTimer available for Calibre GUI refresh: %s", exc)
+            _log.warning("Calibre GUI refresh: no QTimer to schedule it with: %s", exc)
             return
 
     def _refresh() -> None:
@@ -863,7 +867,7 @@ def _full_refresh(model: Any) -> None:
     try:
         model.refresh()
     except Exception as exc:
-        _log.debug("Calibre GUI full refresh failed: %s", exc)
+        _log.warning("Calibre GUI refresh: the full refresh failed, press Ctrl+R: %s", exc)
 
 
 def _recount_tags(gui: Any) -> None:
@@ -886,7 +890,9 @@ def _announce_rows(gui: Any, model: Any, count: int) -> None:
     try:
         refresh = gui.iactions["Add Books"].refresh_gui
     except Exception as exc:
-        _log.debug("Add Books action unavailable, announcing rows directly: %s", exc)
+        _log.warning(
+            "Calibre GUI refresh: Add Books action unavailable, announcing rows directly: %s", exc
+        )
     try:
         if refresh is not None:
             refresh(count)
@@ -894,7 +900,9 @@ def _announce_rows(gui: Any, model: Any, count: int) -> None:
             model.books_added(count)
             _recount_tags(gui)
     except Exception as exc:
-        _log.debug("Calibre GUI row announce failed, doing a full refresh: %s", exc)
+        _log.warning(
+            "Calibre GUI refresh: announcing the new rows failed, doing a full refresh: %s", exc
+        )
         _full_refresh(model)
 
 
@@ -907,7 +915,9 @@ def _repaint_row(gui: Any, model: Any, book_id: int) -> None:
         model.refresh_ids([book_id])
         _recount_tags(gui)
     except Exception as exc:
-        _log.debug("Calibre GUI row refresh failed, doing a full refresh: %s", exc)
+        _log.warning(
+            "Calibre GUI refresh: repainting book %d failed, doing a full refresh: %s", book_id, exc
+        )
         _full_refresh(model)
 
 
@@ -932,12 +942,16 @@ def show_new_books(gui: Any, count: int, book_id: int = 0) -> None:
     try:
         model = gui.library_view.model()
     except Exception as exc:
-        _log.debug("No library view to refresh yet: %s", exc)
+        _log.warning("Calibre GUI refresh: no library view to refresh: %s", exc)
         return
     try:
         added = _register_new_rows(model)
     except Exception as exc:
-        _log.debug("Could not register new rows with the view, doing a full refresh: %s", exc)
+        _log.warning(
+            "Calibre GUI refresh: registering new rows with the view failed, "
+            "doing a full refresh: %s",
+            exc,
+        )
         _full_refresh(model)
         return
     _log.debug("Calibre GUI refresh: %d added, %d new rows in the view", count, len(added))
@@ -958,12 +972,15 @@ def redraw_book(gui: Any, book_id: int) -> None:
     try:
         model = gui.library_view.model()
     except Exception as exc:
-        _log.debug("No library view to refresh yet: %s", exc)
+        _log.warning("Calibre GUI refresh: no library view to refresh: %s", exc)
         return
     try:
         added = _register_new_rows(model)
     except Exception as exc:
-        _log.debug("Could not register rows with the view, doing a full refresh: %s", exc)
+        _log.warning(
+            "Calibre GUI refresh: registering rows with the view failed, doing a full refresh: %s",
+            exc,
+        )
         _full_refresh(model)
         return
     if added:

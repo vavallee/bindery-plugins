@@ -90,7 +90,13 @@ class PullStats:
     # book's other formats as ``add_format``.
     acked_adds: int = 0
     relisted: bool = False
+    # What Bindery reported due at the last listing.
     pending: int | None = None
+    # ``pending`` less what this pass has settled since that listing: what is
+    # still waiting on Bindery when the pass ends. None until a listing says.
+    waiting: int | None = None
+    # Hello and every listing succeeded and the pass ran to its end.
+    completed: bool = False
     status: str = ""
     error: str = ""
     # None: the normal interval. Anything else overrides it.
@@ -254,7 +260,26 @@ class PullWorker:
         if stats.status:
             status.set_pull(detail=stats.status)
         if stats.error:
-            status.set_pull(last_error=stats.error)
+            status.set_pull(last_error=stats.error, last_error_at=self._clock())
+        elif stats.completed:
+            # Bindery answered and nothing went wrong, so an error from an
+            # earlier pass no longer describes anything. It used to stay in
+            # the settings window until Calibre restarted.
+            status.set_pull(last_error="", last_error_at=0.0, last_success=self._clock())
+        _log.debug(
+            "pull pass: %s (listed=%d added=%d format_added=%d already=%d nacked=%d "
+            "skipped=%d ack_failed=%d waiting=%s)%s",
+            stats.status or "stopped early",
+            stats.listed,
+            stats.added,
+            stats.format_added,
+            stats.already,
+            stats.nacked,
+            stats.skipped,
+            stats.ack_failed,
+            stats.waiting,
+            f" error: {stats.error}" if stats.error else "",
+        )
         return stats
 
     def _run(self, stats: PullStats) -> None:
@@ -274,7 +299,6 @@ class PullWorker:
         expected_library = str(cfg.get("pull_library_id") or "")
         if not self._library_ok(db, expected_library, stats):
             return
-        status.set_pull(last_run=self._clock())
         try:
             client = self._client_factory(cfg)
         except (ValueError, OSError) as exc:
@@ -296,7 +320,8 @@ class PullWorker:
         except (TypeError, ValueError):
             batch = DEFAULT_BATCH
         batch = max(1, min(batch, DEFAULT_BATCH))
-        self._drain(client, db, expected_library, batch, stats)
+        swept = self._drain(client, db, expected_library, batch, stats)
+        stats.completed = swept and not stats.error
         if not stats.status:
             stats.status = self._done_status(stats)
 
@@ -321,7 +346,7 @@ class PullWorker:
             return False
         return True
 
-    def _drain(self, client: Any, db: Any, expected: str, batch: int, stats: PullStats) -> None:
+    def _drain(self, client: Any, db: Any, expected: str, batch: int, stats: PullStats) -> bool:
         """List and deliver, then list once more if that can unlock formats.
 
         Bindery holds a book's second format back until the first file of
@@ -329,14 +354,15 @@ class PullWorker:
         extra listing from the start, after a sweep that acked at least one
         ``add``, puts a two format book into Calibre in one pass instead of
         two. Never more than one: a Bindery that keeps producing new rows is
-        left for the next pass.
+        left for the next pass. False when a listing failed.
         """
         seen: set[str] = set()
         if not self._sweep(client, db, expected, batch, stats, seen):
-            return
+            return False
         if stats.acked_adds:
             stats.relisted = True
-            self._sweep(client, db, expected, batch, stats, seen)
+            return self._sweep(client, db, expected, batch, stats, seen)
+        return True
 
     def _sweep(
         self,
@@ -365,8 +391,8 @@ class PullWorker:
                 stats.error = "Bindery sent a delivery list that is not a list"
                 return False
             pending = page.get("pending")
-            if isinstance(pending, int):
-                stats.pending = pending
+            if isinstance(pending, int) and not isinstance(pending, bool):
+                stats.pending = stats.waiting = max(0, pending)
             for delivery in deliveries:
                 if self._stop.is_set():
                     raise _Stop()
@@ -427,9 +453,19 @@ class PullWorker:
     @staticmethod
     def _done_status(stats: PullStats) -> str:
         delivered = stats.added + stats.format_added + stats.already
+        waiting = stats.waiting or 0
         if stats.listed == 0:
+            if waiting:
+                return f"Connected to Bindery; {waiting} waiting"
             return "Connected to Bindery; nothing waiting"
-        return f"Connected to Bindery; {delivered} of {stats.listed} delivered in the last pass"
+        done = f"Connected to Bindery; {delivered} of {stats.listed} delivered in the last pass"
+        return f"{done}, {waiting} waiting" if waiting else done
+
+    @staticmethod
+    def _settled(stats: PullStats) -> None:
+        """Bindery took an ack or a nack: one delivery fewer is waiting there."""
+        if stats.waiting:
+            stats.waiting -= 1
 
     # -- one delivery --------------------------------------------------------
 
@@ -532,6 +568,7 @@ class PullWorker:
                     # Bindery's side. Nothing to retry and nothing wrong here.
                     _log.debug("pull: ack of delivery %s not needed: %s", delivery_id, exc)
                     stats.settled += 1
+                    self._settled(stats)
                     return
                 # The book is in Calibre; Bindery will list it again and the
                 # dedupe turns the retry into an ``already`` ack.
@@ -540,6 +577,15 @@ class PullWorker:
                 stats.error = f"ack {delivery_id}: {exc}"
                 return
             stats.acks.append({"id": delivery_id, **body})
+            self._settled(stats)
+            _log.info(
+                "pull: delivery %s (%s %s) acknowledged as %s, book %d",
+                delivery_id,
+                action,
+                ext,
+                outcome,
+                body["calibreId"],
+            )
             if action == "add":
                 stats.acked_adds += 1
             status.add_pull_delivered(1)
@@ -586,9 +632,13 @@ class PullWorker:
             if _already_settled(exc):
                 _log.debug("pull: nack of delivery %s not needed: %s", delivery_id, exc)
                 stats.settled += 1
+                self._settled(stats)
                 return
             _log.warning("pull: nack of delivery %s failed: %s", delivery_id, exc)
             stats.error = f"nack {delivery_id}: {exc}"
+            return
+        self._settled(stats)
+        _log.info("pull: delivery %s refused as %s: %s", delivery_id, code, message)
 
 
 def _already_settled(exc: bindery_client.BinderyError) -> bool:
