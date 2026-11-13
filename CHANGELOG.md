@@ -9,6 +9,16 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ### [Unreleased]
 
+### [0.8.4] - 2026-11-13
+
+This release hardens the push server, identifier matching and the Helm chart installer. Update soon. Read the notes below first, because three of the changes can need action on your side:
+
+- A bridge with no API key now refuses requests that do not name a loopback host. If Bindery reaches an unkeyed bridge through a proxy, tunnel or container address, set an API key in the plugin settings and in Bindery.
+- A key under 16 characters is refused on a network bind. Press Generate and update the key in Bindery.
+- A custom `releaseUrlTemplate` that points at a plain http mirror stops working with the Helm chart. Use https.
+
+Setting `pluginSha256` in the chart values to the SHA-256 published with the release makes the chart verify the zip it installs.
+
 #### Changed
 
 - **Hardening of the push server.** A bridge with no API key now answers only
