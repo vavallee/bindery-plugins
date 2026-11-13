@@ -89,6 +89,67 @@ Include tests for:
 - Path traversal inputs (if `add_book`-style logic exists)
 - Config widget init, commit, and generate-key button
 
+### Real Calibre checks
+
+The tests above replace Calibre and Qt with fakes, so they prove the plugin
+agrees with our idea of Calibre, not with Calibre. Two bugs shipped that way
+with a green build: the plugin failed to start because `genesis` read an
+attribute the main window does not have yet (#26), and delivered books stayed
+out of the library list until Ctrl+R because the view was never told about
+them (#30).
+
+The `Calibre integration` workflow (`.github/workflows/calibre-integration.yml`)
+runs the built plugin zip inside a real Calibre, installed with Calibre's own
+Linux installer. It runs on every pull request and every push to `main`
+against the last 6.x, 7.x and 8.x releases and a pinned 9.x (the versions are
+listed in the workflow). A weekly run and a manual run add whatever Calibre
+released most recently; that leg reports a failure without failing the run.
+
+The scripts live in `plugins/calibre-bridge/tests/integration/`, which
+`build_plugin.py` keeps out of the release zip. There are two checks:
+
+- **Model check** (`model_check.py`, run inside `calibre-debug`). A real
+  library, the real `BooksModel` the library list is drawn from, and the
+  plugin imported from the installed zip. It delivers a generated EPUB through
+  `add_book_detailed` on a worker thread, lets the plugin's own refresh run,
+  and asserts that the model grew by one row, that a search through the view
+  finds the book, that the format is attached, that a second delivery and an
+  ISBN match are duplicates, and that `addFormat` repaints the row. Only the
+  main window is a stand in; the script's docstring says exactly which parts.
+- **Boot check** (in `run.py`). Starts the whole Calibre GUI with the plugin
+  configured on a loopback port, waits for `GET /v1/health`, posts a book and
+  expects a `201`, posts it again and expects a `409`, shuts Calibre down with
+  `calibre -s`, and fails if Calibre printed a traceback from the plugin.
+
+To run them yourself you need a Calibre install and nothing else. No display
+is needed, and your own Calibre settings and library are not touched: every
+Calibre process gets a temporary configuration directory. Close your own
+Calibre before the boot check. Calibre allows one running copy per user, so
+the check refuses to start while it finds one; the model check does not mind.
+
+```bash
+# Both checks, against the Calibre on your PATH
+python3 plugins/calibre-bridge/tests/integration/run.py
+
+# One check, against a specific install
+python3 plugins/calibre-bridge/tests/integration/run.py model --calibre-dir /opt/calibre
+
+# A specific Calibre version, unpacked next to your own without replacing it
+wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh \
+  | sh /dev/stdin install_dir=~/calibre-9.18.0 isolated=y version=9.18.0
+python3 plugins/calibre-bridge/tests/integration/run.py --calibre-dir ~/calibre-9.18.0/calibre
+```
+
+`--plugin-dir` points the checks at another copy of the plugin source, for
+example a worktree of an older tag, to see whether they would have caught a
+bug. The workflow's manual run has a `plugin_ref` input that does the same.
+
+When a change touches how books reach the library or the list, or what
+`genesis` does, add the expectation to these scripts as well as to the unit
+tests. When a Calibre version in the matrix fails, it is a finding about the
+plugin until shown otherwise: fix it, or mark that leg as expected to fail
+with a comment that links the issue.
+
 ## Type hints
 
 All production code must pass mypy under the project's settings in

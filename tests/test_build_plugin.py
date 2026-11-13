@@ -304,3 +304,26 @@ def test_the_real_zip_carries_no_test_stubs(build_plugin, tmp_path):
         names = zf.namelist()
 
     assert [n for n in names if n.rsplit("/", 1)[-1] == "conftest.py"] == []
+
+
+def test_the_real_zip_carries_no_integration_scripts(build_plugin, tmp_path):
+    """The real Calibre checks live under the plugin's tests/integration.
+
+    They drive Calibre from the outside and one of them runs inside
+    calibre-debug, so they sit in the plugin tree, next to the code they
+    exercise. Nothing from that directory may reach the zip users install.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    plugin_dir = repo_root / "plugins" / "calibre-bridge"
+    if not plugin_dir.is_dir():
+        pytest.skip("calibre-bridge plugin not present")
+    integration = plugin_dir / "tests" / "integration"
+    scripts = {p.name for p in integration.glob("*.py")}
+    assert {"run.py", "model_check.py"} <= scripts, "integration scripts moved, update this test"
+
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", repo_root)
+    with zipfile.ZipFile(out_zip) as zf:
+        names = zf.namelist()
+
+    assert [n for n in names if "integration" in n.split("/")] == []
+    assert [n for n in names if n.rsplit("/", 1)[-1] in scripts] == []
