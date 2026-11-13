@@ -7,7 +7,9 @@ break here ships a broken zip.
 from __future__ import annotations
 
 import hashlib
+import os
 import pathlib
+import subprocess
 import zipfile
 
 import pytest
@@ -327,3 +329,97 @@ def test_the_real_zip_carries_no_integration_scripts(build_plugin, tmp_path):
 
     assert [n for n in names if "integration" in n.split("/")] == []
     assert [n for n in names if n.rsplit("/", 1)[-1] in scripts] == []
+
+
+def _build_in(build_plugin, root: pathlib.Path, mtime: int | None = None):
+    """Build the demo plugin inside `root`, optionally touching every source file first."""
+    root.mkdir(parents=True)
+    plugin_dir = make_plugin_tree(root)
+    repo_root = make_repo_root(root)
+    if mtime is not None:
+        for path in [*plugin_dir.rglob("*"), *repo_root.iterdir()]:
+            os.utime(path, (mtime, mtime))
+    return build_plugin.build(plugin_dir, root / "dist", repo_root)
+
+
+def test_build_is_byte_identical_across_directories_and_mtimes(build_plugin, tmp_path, monkeypatch):
+    # The mtimes of a fresh checkout are the checkout time, so two builds of
+    # one commit used to differ in every entry header and in the sha256.
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    first = _build_in(build_plugin, tmp_path / "one", mtime=1_700_000_000)
+    second = _build_in(build_plugin, tmp_path / "two", mtime=1_800_000_000)
+
+    assert first.read_bytes() == second.read_bytes()
+    first_sidecar = (first.parent / (first.name + ".sha256")).read_text()
+    second_sidecar = (second.parent / (second.name + ".sha256")).read_text()
+    assert first_sidecar == second_sidecar
+    assert hashlib.sha256(first.read_bytes()).hexdigest() in first_sidecar
+
+
+def test_entries_carry_one_fixed_header(build_plugin, tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    plugin_dir = make_plugin_tree(tmp_path)
+    (plugin_dir / "plugin" / "handlers.py").chmod(0o755)
+    out_zip = build_plugin.build(plugin_dir, tmp_path / "dist", make_repo_root(tmp_path))
+
+    with zipfile.ZipFile(out_zip) as zf:
+        infos = zf.infolist()
+
+    names = [i.filename for i in infos]
+    assert names == sorted(names)
+    assert {i.date_time for i in infos} == {(2023, 11, 14, 22, 13, 20)}
+    assert {i.external_attr for i in infos} == {0o100644 << 16}
+    assert {i.create_system for i in infos} == {3}
+    assert {i.compress_type for i in infos} == {zipfile.ZIP_DEFLATED}
+
+
+def test_source_date_epoch_sets_the_entry_time(build_plugin, tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    first = _build_in(build_plugin, tmp_path / "one")
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700086400")
+    second = _build_in(build_plugin, tmp_path / "two")
+
+    assert first.read_bytes() != second.read_bytes()
+    with zipfile.ZipFile(second) as zf:
+        assert {i.date_time for i in zf.infolist()} == {(2023, 11, 15, 22, 13, 20)}
+
+
+def test_without_a_commit_or_epoch_the_time_is_the_zip_floor(build_plugin, tmp_path, monkeypatch):
+    # tmp_path is not a git checkout, so there is no commit time to read.
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    out_zip = _build_in(build_plugin, tmp_path / "one", mtime=1_700_000_000)
+
+    with zipfile.ZipFile(out_zip) as zf:
+        assert {i.date_time for i in zf.infolist()} == {(1980, 1, 1, 0, 0, 0)}
+
+
+def test_the_commit_time_is_used_when_there_is_a_checkout(build_plugin, tmp_path, monkeypatch):
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    repo = make_repo_root(tmp_path)
+    when = "2024-05-06T07:08:10+00:00"
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": when,
+        "GIT_COMMITTER_DATE": when,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+    }
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run([*git, "init", "-q"], check=True, env=env)
+    subprocess.run([*git, "add", "."], check=True, env=env)
+    subprocess.run([*git, "commit", "-q", "-m", "x", "--no-gpg-sign"], check=True, env=env)
+
+    assert build_plugin.zip_timestamp(repo) == 1_714_979_290
+
+
+def test_a_garbage_source_date_epoch_is_refused(build_plugin, tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "yesterday")
+    with pytest.raises(SystemExit):
+        build_plugin.zip_timestamp(tmp_path)
+
+
+def test_a_source_date_epoch_before_1980_is_raised_to_the_zip_floor(
+    build_plugin, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "0")
+    assert build_plugin.zip_timestamp(tmp_path) == build_plugin.ZIP_EPOCH

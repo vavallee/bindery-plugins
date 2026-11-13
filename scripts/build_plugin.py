@@ -10,8 +10,11 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import os
 import pathlib
+import subprocess  # nosec B404 - runs `git log` with a fixed argument list
 import sys
+import time
 import zipfile
 
 EXCLUDE_DIRS = {"__pycache__", "tests", ".pytest_cache", ".mypy_cache"}
@@ -30,6 +33,16 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 # present.
 LICENCE_FILES = ("LICENSE", "COPYRIGHT")
 REQUIRED_LICENCE_FILES = frozenset({"LICENSE"})
+
+# The zip format cannot hold a date before 1980, so this is both the floor for
+# any timestamp and the last resort when nothing better is known.
+ZIP_EPOCH = 315532800  # 1980-01-01T00:00:00Z
+ZIP_COMPRESSION = zipfile.ZIP_DEFLATED
+ZIP_COMPRESSLEVEL = 9
+# Every entry is a regular file, readable by all and writable by the owner.
+# Copying the mode from disk would let a checkout's umask change the bytes.
+ZIP_FILE_ATTRS = (0o100644) << 16
+ZIP_CREATE_SYSTEM = 3  # Unix, whatever platform builds the zip
 
 
 def read_version(init_path: pathlib.Path) -> str:
@@ -62,6 +75,33 @@ def licence_files(repo_root: pathlib.Path) -> list[pathlib.Path]:
     return found
 
 
+def zip_timestamp(repo_root: pathlib.Path) -> int:
+    """The one timestamp every zip entry carries, in seconds since the epoch.
+
+    The same content has to give the same bytes, so file mtimes (which differ
+    between checkouts) are never used. In order: `SOURCE_DATE_EPOCH` when set,
+    the commit time of HEAD in `repo_root` (the tagged commit in a release
+    build), then 1980-01-01, the earliest date a zip can hold.
+    """
+    raw = os.environ.get("SOURCE_DATE_EPOCH", "").strip()
+    if raw:
+        try:
+            return max(int(raw), ZIP_EPOCH)
+        except ValueError:
+            raise SystemExit(f"SOURCE_DATE_EPOCH is not an integer: {raw!r}") from None
+    try:
+        result = subprocess.run(  # nosec B603 B607 - fixed arguments, no shell
+            ["git", "-C", str(repo_root), "log", "-1", "--format=%ct"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        return max(int(result.stdout.strip()), ZIP_EPOCH)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ZIP_EPOCH
+
+
 def build(
     plugin_dir: pathlib.Path,
     output_dir: pathlib.Path,
@@ -75,25 +115,38 @@ def build(
     output_dir.mkdir(parents=True, exist_ok=True)
     out_zip = output_dir / plugin_zip_name(plugin_dir, version)
 
-    with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        members = set()
-        for path in sorted(plugin_dir.rglob("*")):
-            if path.is_dir():
-                continue
-            rel = path.relative_to(plugin_dir)
-            if any(part in EXCLUDE_DIRS for part in rel.parts):
-                continue
-            if path.suffix in EXCLUDE_SUFFIXES:
-                continue
-            if path.name in EXCLUDE_FILES:
-                continue
-            zf.write(path, rel.as_posix())
-            members.add(rel.as_posix())
-        for path in licences:
-            # A licence the plugin ships itself wins over the repository one.
-            if path.name in members:
-                continue
-            zf.write(path, path.name)
+    # Collect first so the entries can be written in one sorted order. A
+    # licence the plugin ships itself wins over the repository one.
+    entries: dict[str, pathlib.Path] = {}
+    for path in plugin_dir.rglob("*"):
+        if path.is_dir():
+            continue
+        rel = path.relative_to(plugin_dir)
+        if any(part in EXCLUDE_DIRS for part in rel.parts):
+            continue
+        if path.suffix in EXCLUDE_SUFFIXES:
+            continue
+        if path.name in EXCLUDE_FILES:
+            continue
+        entries[rel.as_posix()] = path
+    for path in licences:
+        entries.setdefault(path.name, path)
+
+    # Fixed timestamp, entry order, attributes and compression, so two builds
+    # of the same content are byte identical (given the same zlib).
+    date_time = time.gmtime(zip_timestamp(repo_root))[:6]
+    with zipfile.ZipFile(out_zip, "w") as zf:
+        for arcname in sorted(entries):
+            info = zipfile.ZipInfo(arcname, date_time)
+            info.compress_type = ZIP_COMPRESSION
+            info.external_attr = ZIP_FILE_ATTRS
+            info.create_system = ZIP_CREATE_SYSTEM
+            zf.writestr(
+                info,
+                entries[arcname].read_bytes(),
+                compress_type=ZIP_COMPRESSION,
+                compresslevel=ZIP_COMPRESSLEVEL,
+            )
 
     digest = hashlib.sha256(out_zip.read_bytes()).hexdigest()
     (output_dir / (out_zip.name + ".sha256")).write_text(f"{digest}  {out_zip.name}\n")
