@@ -180,7 +180,10 @@ class KavitaClient:
     def check(self) -> Health:
         """Is Kavita up, is the key accepted, and may it scan? Never raises."""
         try:
-            # AdminPolicy and read only: 200 means a valid key on an admin account.
+            # Admin only and read only. With no path it returns the server's root
+            # directories (drive names), which this code discards. A 200 proves an
+            # admin key. /api/Library/libraries would not: any signed in user may
+            # call it, so it cannot show scan rights.
             self._call("GET", "/api/Library/list")
         except KavitaAuthError as exc:
             return Health(True, exc.status == 403, False)

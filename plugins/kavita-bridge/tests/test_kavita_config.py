@@ -186,21 +186,36 @@ class TestEntryPoint:
     def test_main_refuses_a_bad_bind(self, monkeypatch, caplog):
         for k, v in env(KAVITA_BRIDGE_BIND_HOST="0.0.0.0").items():  # noqa: S104
             monkeypatch.setenv(k, v)
+
+        def started(*args, **kwargs):
+            # Without the refusal main() would serve until a signal arrives and
+            # hang the suite, so make "got as far as listening" an immediate failure.
+            raise AssertionError("the bridge started instead of refusing")
+
+        monkeypatch.setattr(entry, "Receiver", started)
         assert entry.main([]) == 2
         assert "refusing to start" in caplog.text
 
     def test_a_real_process_refuses_and_exits_nonzero(self):
         root = Path(__file__).resolve().parents[1]
-        proc = subprocess.run(  # noqa: S603
+        proc = subprocess.Popen(  # noqa: S603
             [sys.executable, "-m", "kavita_bridge"],
             cwd=root,
             env={**ENV, "KAVITA_BRIDGE_BIND_HOST": "0.0.0.0", "PATH": ""},  # noqa: S104
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=30,
         )
+        try:
+            # A refusal exits at once. If the rule is gone the process would
+            # serve for ever, so kill it and fail instead of hanging the suite.
+            _, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            pytest.fail("the process did not refuse to start")
         assert proc.returncode == 2
-        assert "refusing to start" in proc.stderr
+        assert "refusing to start" in err
 
     def test_a_real_process_serves_health_and_stops_on_sigterm(self):
         import http.client

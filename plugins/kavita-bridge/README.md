@@ -156,7 +156,7 @@ its log and exit code.
   that arrives before it fires joins the batch. The window is fixed from the
   first event, so a steady trickle cannot postpone the scan for ever. An event
   after the timer starts the next batch. Kavita defers a scan requested while
-  another runs (3 hours, `TaskScheduler.cs` lines 463 to 483; `ScanLibraries` for scan-all is lines 449 to 460), so a long window
+  another runs (3 hours, `Kavita.Services/TaskScheduler.cs` lines 463 to 483; `ScanLibraries` for scan-all is lines 449 to 460), so a long window
   is kinder than a short one for big imports.
 - **Library selection by path.** With `scan_mode=path` the bridge reads
   `path` from the event, rewrites it with `KAVITA_BRIDGE_PATH_MAP`, lists
@@ -206,32 +206,38 @@ token free form, so it reports that the bridge is up, not that Kavita is.
 
 Read from the Kavita source at tag `v0.9.1.4` (2026-09-02, the newest release
 when this was written; the same files on `develop` at e844b64f match) and from
-the Kavita wiki page [API](https://wiki.kavitareader.com/guides/api/). Paths are
-under `Kavita.Server/` unless noted.
+the Kavita wiki page [API](https://wiki.kavitareader.com/guides/api/). The tag
+points at commit 879b8b73. Every path below is a full repository path at that
+tag, and every line number is a line of that file at that tag.
 
 **Confirmed in source**
 
 | Fact | Where |
 |---|---|
-| Scan one library: `POST /api/Library/scan?libraryId={id}&force={bool}`; ids and `force` are query parameters, no body | `Controllers/LibraryController.cs` lines 346 to 353; `[ApiController]` at `Controllers/BaseApiController.cs` line 19 binds simple types from the query |
-| Scan all: `POST /api/Library/scan-all?force={bool}` | `LibraryController.cs` lines 376 to 382 |
-| Both need the admin role | `[Authorize(Policy = PolicyGroups.AdminPolicy)]`, `LibraryController.cs` lines 347 and 377; policy is `RequireRole(AdminRole)`, `Extensions/IdentityServiceExtensions.cs` line 154 |
-| **An Auth key is accepted directly as the `x-api-key` header** (also as `?apiKey=` and as an `apiKey` route value), with no JWT exchange | `Middleware/AuthKeyAuthenticationHandler.cs` lines 113 to 134; header name `x-api-key` in `Kavita.Common/Constants/Headers.cs` line 14; `IdentityServiceExtensions.cs` lines 85 to 90 route any request carrying a key to that handler |
-| The key's roles come from its user, so a key of an admin passes the admin policy | `AuthKeyAuthenticationHandler.cs` lines 88 to 91 |
+| Scan one library: `POST /api/Library/scan?libraryId={id}&force={bool}`; ids and `force` are query parameters, no body | `Kavita.Server/Controllers/LibraryController.cs` lines 346 to 353; `[ApiController]` at `Kavita.Server/Controllers/BaseApiController.cs` line 19 binds simple types from the query |
+| Scan all: `POST /api/Library/scan-all?force={bool}` | `Kavita.Server/Controllers/LibraryController.cs` lines 376 to 382 |
+| Both need the admin role | `[Authorize(Policy = PolicyGroups.AdminPolicy)]`, `Kavita.Server/Controllers/LibraryController.cs` lines 347 and 377; policy is `RequireRole(AdminRole)`, `Kavita.Server/Extensions/IdentityServiceExtensions.cs` line 154 |
+| **An Auth key is accepted directly as the `x-api-key` header on the scan routes** (also as `?apiKey=` and as an `apiKey` route value), with no JWT exchange. Read: `ExtractAuthKey` takes the header from any request; the default scheme (`AddAuthentication(DynamicHybrid)`) sends every request that carries a key to the AuthKey handler, which loads the key's user and roles and builds the principal the `[Authorize]` and `AdminPolicy` checks run against. No per route allow list exists in these files. The handler also rejects keys that fail `AuthKeyHelper.IsValidAuthKey` or are unknown or expired | `Kavita.Server/Middleware/AuthKeyAuthenticationHandler.cs` lines 113 to 134; header name `x-api-key` in `Kavita.Common/Constants/Headers.cs` line 14; `Kavita.Server/Extensions/IdentityServiceExtensions.cs` lines 78 and 85 to 90 route any request carrying a key to that handler |
+| The key's roles come from its user, so a key of an admin passes the admin policy | `Kavita.Server/Middleware/AuthKeyAuthenticationHandler.cs` lines 88 to 91 |
 | Keys can expire; an expired key does not authenticate | `Kavita.Models/Entities/User/AppUserAuthKey.cs` line 26; `Kavita.Database/Repositories/UserRepository.cs` lines 840 to 853 (`HasNotExpired`) |
-| The wiki recommends Auth keys in `x-api-key`, and `GET /api/plugin/authkey-expires` reports an expiry | wiki.kavitareader.com/guides/api; `Controllers/PluginController.cs` lines 86 to 96 |
-| Optional JWT route: `POST /api/Plugin/authenticate?apiKey=...&pluginName=...`, anonymous, returns a user object with `Token` | `PluginController.cs` lines 33 to 64 (reply built at 56 to 63) |
+| The wiki recommends Auth keys in `x-api-key`, and `GET /api/plugin/authkey-expires` reports an expiry | wiki.kavitareader.com/guides/api; `Kavita.Server/Controllers/PluginController.cs` lines 86 to 96 |
+| Optional JWT route: `POST /api/Plugin/authenticate?apiKey=...&pluginName=...`, anonymous, returns a user object with `Token` | `Kavita.Server/Controllers/PluginController.cs` lines 33 to 64 (reply built at 56 to 63) |
 | A JWT lives 3 days | `Kavita.Services/TokenService.cs` line 56 (`AddDays(3)`) |
-| List libraries and their folders: `GET /api/Library/libraries`, items carry `Id`, `Name` and `Folders` | `LibraryController.cs` line 227; `Kavita.Models/DTOs/LibraryDto.cs` lines 14 to 61 |
-| A read only admin probe used by health: `GET /api/Library/list` | `LibraryController.cs` lines 167 to 169 |
+| List libraries and their folders: `GET /api/Library/libraries`, items carry `Id`, `Name` and `Folders` | `Kavita.Server/Controllers/LibraryController.cs` line 227; `Kavita.Models/DTOs/LibraryDto.cs` lines 14 to 61 |
+| Health probe: `GET /api/Library/list` is admin only and changes nothing. With no `path` it returns the server's root directories (`Directory.GetLogicalDrives()`), so a 200 proves an admin key and nothing more | `Kavita.Server/Controllers/LibraryController.cs` lines 167 to 180 |
+| `GET /api/Library/libraries` is open to any signed in user (class level `[Authorize]` only), so a 200 there cannot show admin rights; that is why health does not use it | `Kavita.Server/Controllers/LibraryController.cs` lines 18 and 227 to 232 |
 | A scan requested while another runs is rescheduled 3 hours later; a duplicate request for one library is skipped | `Kavita.Services/TaskScheduler.cs` lines 449 to 483 |
-| `POST /api/Library/scan-folder` takes a folder path and an admin key in a JSON body, anonymous route | `LibraryController.cs` lines 458 to 485; `Kavita.Models/DTOs/ScanFolderDto.cs`. Not used, because Bindery's ebook event has no folder path |
+| `POST /api/Library/scan-folder` takes a folder path and an admin key in a JSON body, anonymous route | `Kavita.Server/Controllers/LibraryController.cs` lines 458 to 485; `Kavita.Models/DTOs/ScanFolderDto.cs`. Not used, because Bindery's ebook event has no folder path |
 | An Auth key is 8 to 32 letters and digits (or an older GUID) | `Kavita.Common/Helpers/AuthKeyHelper.cs` lines 10, 11 and 28 to 32 |
 
 **Not confirmed: no live Kavita was available**
 
 - That the routes answer as the source implies. Nothing here was run against a
   real Kavita, and the tests use a fake server that implements the same reading.
+- That `x-api-key` authenticates `scan` and `scan-all` at run time. That is
+  established by reading the handler and the scheme selection above, not by
+  sending a request. The OpenAPI description in Kavita's `Startup.cs` was not
+  used as evidence.
 - JSON field casing in `/api/Library/libraries` and the sign in reply
   (`id`, `name`, `folders`, `token`). ASP.NET defaults to camel case and the
   parser assumes it.
