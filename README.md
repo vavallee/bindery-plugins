@@ -10,6 +10,7 @@ codebase.
 | Name             | Target       | Path                        | Release |
 |------------------|--------------|-----------------------------|---------|
 | Bindery Bridge   | Calibre 6+   | `plugins/calibre-bridge/`   | [latest](https://github.com/vavallee/bindery-plugins/releases/latest) |
+| Kavita Bridge    | Kavita 0.9+  | `plugins/kavita-bridge/`    | unreleased, see its [README](plugins/kavita-bridge/README.md) |
 
 ### What Bindery Bridge exposes
 

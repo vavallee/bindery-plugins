@@ -5,7 +5,8 @@
 ```
 bindery-plugins/
 ├── plugins/
-│   └── calibre-bridge/  # Calibre plugin (plugin/, tests/, conftest.py)
+│   ├── calibre-bridge/  # Calibre plugin (plugin/, tests/, conftest.py)
+│   └── kavita-bridge/   # Standalone receiver for Kavita (kavita_bridge/, tests/, Dockerfile)
 ├── scripts/
 │   ├── build_plugin.py     # builds the release zip
 │   ├── check_versions.py   # CI: every place naming a version agrees
