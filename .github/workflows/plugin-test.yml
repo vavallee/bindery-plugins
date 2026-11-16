@@ -17,6 +17,11 @@ on:
         # minimum_calibre_version=(6,0,0), so that is the whole supported range.
         # No Calibre release embeds 3.12 or 3.13.
         default: '["3.10", "3.11", "3.14"]'
+      package_dir:
+        description: "Directory under plugin_dir that holds the code to measure and scan"
+        required: false
+        type: string
+        default: plugin
       upload_coverage:
         description: "Upload coverage artifact (uses upload_coverage_version)"
         required: false
@@ -55,15 +60,17 @@ jobs:
       - name: Run tests
         env:
           PLUGIN_DIR: ${{ inputs.plugin_dir }}
+          PACKAGE_DIR: ${{ inputs.package_dir }}
         run: |
           pytest "${PLUGIN_DIR}/tests" \
-            --cov="${PLUGIN_DIR}/plugin" \
+            --cov="${PLUGIN_DIR}/${PACKAGE_DIR}" \
             --cov-report=xml \
             --cov-report=term
       - name: Bandit security scan
         env:
           PLUGIN_DIR: ${{ inputs.plugin_dir }}
-        run: bandit -r "${PLUGIN_DIR}/plugin" -x "${PLUGIN_DIR}/tests"
+          PACKAGE_DIR: ${{ inputs.package_dir }}
+        run: bandit -r "${PLUGIN_DIR}/${PACKAGE_DIR}" -x "${PLUGIN_DIR}/tests"
       - name: Compute coverage artifact name
         id: cov
         if: inputs.upload_coverage && matrix.python-version == inputs.upload_coverage_version

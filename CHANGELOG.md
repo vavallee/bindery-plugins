@@ -465,3 +465,24 @@ Initial release.
   library swap.
 - Configuration dialog (Preferences -> Plugins -> Bindery Bridge ->
   Customize) stores `port`, `bind_host`, `api_key` via `JSONConfig`.
+
+## kavita-bridge
+
+### [Unreleased]
+
+#### Added
+
+- **A Kavita companion.** A standalone receiver that tells Kavita to scan its
+  library when Bindery finishes importing a book, from Bindery's webhook
+  notifier. It debounces a burst of imports into one scan per library, can pick
+  the library from the imported file's path, keeps the Kavita key out of Bindery,
+  and has a `GET /v1/health` that reports whether Kavita is reachable and the key
+  is accepted. Standard library only; run it as a script or build the container
+  image from `plugins/kavita-bridge/Dockerfile`. Kavita also accepts its Auth key
+  directly in an `x-api-key` header, so a plain Bindery webhook can trigger a
+  scan with no bridge at all; the README leads with that setup. Not yet
+  released or tested against a live Kavita. See
+  [plugins/kavita-bridge/README.md](plugins/kavita-bridge/README.md) and
+  [docs/kavita-bridge.md](docs/kavita-bridge.md).
+  ([vavallee/bindery#3901](https://github.com/vavallee/bindery/issues/3901),
+  requested by jviall)
