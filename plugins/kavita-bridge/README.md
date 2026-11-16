@@ -41,7 +41,7 @@ time it is enough. Use the bridge only for what it cannot do:
 | Plain webhook | Bridge |
 |---|---|
 | One scan request per imported book. A bulk import is a burst of requests. | One scan per library per burst (the debounce window, default 30 s). |
-| Kavita's `scan-all` does not collapse repeats: while a scan runs, every further request is queued as its own job for 3 hours later (`Kavita.Services/TaskScheduler.cs` lines 449 to 460 at v0.9.1.4). A burst can queue many delayed full scans. | The burst is sent as one request. |
+| Kavita's `scan-all` does not collapse repeats: while a scan runs, every further request is queued as its own job for 3 hours later (`Kavita.Services/TaskScheduler.cs` lines 449 to 461 at v0.9.1.4). A burst can queue many delayed full scans. | The burst is sent as one request. |
 | The Kavita key is stored in Bindery's notification settings. | The Kavita key lives only in the bridge. Bindery holds a token for the bridge, not for Kavita. |
 | Library is fixed in the URL. | Library chosen by the imported file's path, when the event carries one (see the limit below). |
 
@@ -156,7 +156,7 @@ its log and exit code.
   that arrives before it fires joins the batch. The window is fixed from the
   first event, so a steady trickle cannot postpone the scan for ever. An event
   after the timer starts the next batch. Kavita defers a scan requested while
-  another runs (3 hours, `Kavita.Services/TaskScheduler.cs` lines 463 to 483; `ScanLibraries` for scan-all is lines 449 to 460), so a long window
+  another runs (3 hours, `Kavita.Services/TaskScheduler.cs` lines 463 to 484; `ScanLibraries` for scan-all is lines 449 to 461), so a long window
   is kinder than a short one for big imports.
 - **Library selection by path.** With `scan_mode=path` the bridge reads
   `path` from the event, rewrites it with `KAVITA_BRIDGE_PATH_MAP`, lists
@@ -225,9 +225,9 @@ tag, and every line number is a line of that file at that tag.
 | A JWT lives 3 days | `Kavita.Services/TokenService.cs` line 56 (`AddDays(3)`) |
 | List libraries and their folders: `GET /api/Library/libraries`, items carry `Id`, `Name` and `Folders` | `Kavita.Server/Controllers/LibraryController.cs` line 227; `Kavita.Models/DTOs/LibraryDto.cs` lines 14 to 61 |
 | Health probe: `GET /api/Library/list` is admin only and changes nothing. With no `path` it returns the server's root directories (`Directory.GetLogicalDrives()`), so a 200 proves an admin key and nothing more | `Kavita.Server/Controllers/LibraryController.cs` lines 167 to 180 |
-| `GET /api/Library/libraries` is open to any signed in user (class level `[Authorize]` only), so a 200 there cannot show admin rights; that is why health does not use it | `Kavita.Server/Controllers/LibraryController.cs` lines 18 and 227 to 232 |
-| A scan requested while another runs is rescheduled 3 hours later; a duplicate request for one library is skipped | `Kavita.Services/TaskScheduler.cs` lines 449 to 483 |
-| `POST /api/Library/scan-folder` takes a folder path and an admin key in a JSON body, anonymous route | `Kavita.Server/Controllers/LibraryController.cs` lines 458 to 485; `Kavita.Models/DTOs/ScanFolderDto.cs`. Not used, because Bindery's ebook event has no folder path |
+| `GET /api/Library/libraries` is open to any signed in user (class level `[Authorize]` only), so a 200 there cannot show admin rights; that is why health does not use it | `Kavita.Server/Controllers/LibraryController.cs` lines 41 and 227 to 232 |
+| A scan requested while another runs is rescheduled 3 hours later; a duplicate request for one library is skipped | `Kavita.Services/TaskScheduler.cs` lines 449 to 484 |
+| `POST /api/Library/scan-folder` takes a folder path and an admin key in a JSON body, anonymous route | `Kavita.Server/Controllers/LibraryController.cs` lines 458 to 487; `Kavita.Models/DTOs/ScanFolderDto.cs`. Not used, because Bindery's ebook event has no folder path |
 | An Auth key is 8 to 32 letters and digits (or an older GUID) | `Kavita.Common/Helpers/AuthKeyHelper.cs` lines 10, 11 and 28 to 32 |
 
 **Not confirmed: no live Kavita was available**
