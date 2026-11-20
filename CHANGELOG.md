@@ -9,6 +9,14 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ### [Unreleased]
 
+#### Changed
+
+- **The failed key throttle no longer blocks the correct key.** Five wrong
+  tokens from one address still block wrong or missing keys from that address
+  for a minute with `429`, but a request with the correct key is always
+  served. Before, anything sharing Bindery's source address could lock Bindery
+  out by sending bad tokens.
+
 ### [0.8.4] - 2026-11-13
 
 This release hardens the push server, identifier matching and the Helm chart installer. Update soon. Read the notes below first, because three of the changes can need action on your side:
