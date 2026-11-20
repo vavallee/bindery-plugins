@@ -409,11 +409,14 @@ def test_throttle_trips_after_five_failures_and_resets_after_the_window(make_bri
     assert payload["code"] == "rate_limited"
     assert int(headers["Retry-After"]) == 60
 
-    # Blocked means blocked: a correct key from the same address waits too.
+    # A wrong key stays blocked for the rest of the window.
     clock.now += 30
-    status, _, headers = _request(bridge.port, "GET", "/v1/paths?path=/x", headers=_bearer())
+    status, _, headers = _request(bridge.port, "GET", "/v1/paths?path=/x", headers=wrong)
     assert status == 429
     assert int(headers["Retry-After"]) == 30
+    # A correct key from the same address is never blocked.
+    status, _, _ = _request(bridge.port, "GET", "/v1/paths?path=/x", headers=_bearer())
+    assert status not in (401, 429)
 
     clock.now += 31
     status, _, _ = _request(bridge.port, "GET", "/v1/paths?path=/x", headers=_bearer())
@@ -428,9 +431,10 @@ def test_a_wrong_token_on_health_counts_but_a_missing_one_does_not(make_bridge):
     for _ in range(20):
         assert _request(bridge.port, "GET", "/v1/health")[0] == 200
     assert _request(bridge.port, "GET", "/v1/paths?path=/x", headers=_bearer())[0] != 429
+    wrong = _bearer("w" * 32)
     for _ in range(5):
-        _request(bridge.port, "GET", "/v1/health", headers=_bearer("w" * 32))
-    status, payload, _ = _request(bridge.port, "GET", "/v1/paths?path=/x", headers=_bearer())
+        _request(bridge.port, "GET", "/v1/health", headers=wrong)
+    status, payload, _ = _request(bridge.port, "GET", "/v1/paths?path=/x", headers=wrong)
     assert status == 429
 
 
@@ -1004,3 +1008,17 @@ def test_an_ipv4_mapped_peer_counts_as_the_ipv4_address(make_bounded):
     assert not _was_refused(_offer(srv, "::ffff:10.0.0.1"))
     assert _was_refused(_offer(srv, "10.0.0.1"))
     assert srv._per_address == {"10.0.0.1": 2}
+
+
+def test_a_correct_key_from_a_blocked_address_is_served(make_bridge):
+    """Anything sharing Bindery's source address must not be able to lock it out."""
+    bridge = make_bridge(KEY, clock=_Clock())
+    wrong = _bearer("w" * 32)
+    for _ in range(5):
+        _request(bridge.port, "POST", "/v1/books", body="{}", headers=wrong)
+    assert _request(bridge.port, "POST", "/v1/books", body="{}", headers=wrong)[0] == 429
+    good = {**_bearer(), "Content-Type": "application/json"}
+    status, _, _ = _request(bridge.port, "POST", "/v1/books", body="{}", headers=good)
+    assert status not in (401, 429)
+    # A correct key does not lift the block for wrong ones.
+    assert _request(bridge.port, "POST", "/v1/books", body="{}", headers=wrong)[0] == 429
