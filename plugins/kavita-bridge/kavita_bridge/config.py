@@ -84,6 +84,28 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+def plain_http_warning(config: Config) -> str | None:
+    """A startup warning when the Kavita key crosses the network unencrypted.
+
+    None for https, and for a Kavita on this machine. In jwt mode the sign in
+    also puts the key in a query string, which is the part proxies and access
+    logs keep; Kavita's authenticate action reads only the query, so that
+    cannot move to a header.
+    """
+    rest = config.kavita_url.split("://", 1)[1]
+    host = rest.split("/", 1)[0]
+    host = host[1 : host.index("]")] if host.startswith("[") else host.rsplit(":", 1)[0]
+    if config.kavita_url.lower().startswith("https://") or is_loopback(host):
+        return None
+    if config.auth_mode == "jwt":
+        return (
+            "kavita_url is plain http: the Kavita key is sent unencrypted, and in jwt mode "
+            "it travels in a query string that proxies and access logs record. Use https, "
+            "or api-key mode, which sends it in a header"
+        )
+    return "kavita_url is plain http: the Kavita key is sent unencrypted. Use https if the path crosses an untrusted network"
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value

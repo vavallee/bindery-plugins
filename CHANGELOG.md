@@ -470,6 +470,15 @@ Initial release.
 
 ### [Unreleased]
 
+#### Changed
+
+- **A startup warning for a plain http Kavita URL.** When `KAVITA_BRIDGE_KAVITA_URL`
+  is `http://` and not on this machine, the bridge logs that the Kavita key is
+  sent unencrypted. In `jwt` mode the warning also says the key travels in a
+  query string that proxies and access logs record. Kavita's authenticate action
+  reads only the query, so that cannot move to a header; `api-key` mode, the
+  default, already sends the key in an `x-api-key` header.
+
 #### Added
 
 - **A Kavita companion.** A standalone receiver that tells Kavita to scan its
