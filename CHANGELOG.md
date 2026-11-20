@@ -9,6 +9,18 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ### [Unreleased]
 
+#### Changed
+
+- **Only book files can be imported.** `POST /v1/books` and pull deliveries
+  now refuse a file whose extension is not an ebook, comic, document or
+  audiobook format (`400 bad_format`). Before, with the default empty Ingest
+  root, a caller holding the key could import any file Calibre could read. The
+  bridge also logs a warning at startup while Ingest root is empty. Setting
+  Ingest root to the folder Bindery's books live in is still the stronger fix,
+  and it also stops `GET /v1/paths` revealing whether other paths exist. The
+  default stays empty because the bridge cannot know where Bindery's remapped
+  downloads live, and a guess would break existing pushes.
+
 ### [0.8.4] - 2026-11-13
 
 This release hardens the push server, identifier matching and the Helm chart installer. Update soon. Read the notes below first, because three of the changes can need action on your side:

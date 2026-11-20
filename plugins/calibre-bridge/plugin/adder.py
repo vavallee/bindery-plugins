@@ -25,6 +25,19 @@ DEDUPE_IDENTIFIERS = ("isbn", "asin", "google", "hardcover")
 # from the network like any other field.
 MAX_COVER_BYTES = 16 * 1024 * 1024
 
+# Extensions a push or a delivery may name. The bridge hands the file to
+# Calibre's metadata readers and copies it into the library, so without this a
+# caller holding the key could import any file Calibre can read. Covers the
+# ebook, comic, document and audiobook formats Calibre and Bindery deal in.
+BOOK_EXTENSIONS = frozenset(
+    {
+        "epub", "kepub", "mobi", "azw", "azw3", "azw4", "kfx", "prc", "pdb", "pdf", "fb2", "fbz",
+        "djvu", "cbz", "cbr", "cb7", "cbc", "txt", "txtz", "rtf", "docx", "odt", "htm", "html",
+        "htmlz", "lit", "lrf", "snb", "tpz", "mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac",
+        "wav", "wma", "mp4",
+    }
+)  # fmt: skip
+
 # Calibre writes these placeholders when it has nothing better (see
 # Cache.create_book_entry: ``mi.title = mi.title or _('Unknown')``), so a
 # metadata update must treat them as empty rather than as a user's own value.
@@ -201,6 +214,8 @@ def add_book_detailed(
     fmt = os.path.splitext(path)[1][1:].upper()
     if not fmt:
         raise BadFormat(f"Cannot determine book format from extension: {path!r}")
+    if fmt.lower() not in BOOK_EXTENSIONS:
+        raise BadFormat(f"Not an allowed book extension: {path!r}")
     api = db.new_api
     path = _calibre_safe_path(path)
     try:

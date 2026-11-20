@@ -124,7 +124,7 @@ branching on the status alone.
 | `path_not_found` | 400 | There is no file at `path` as the Calibre process sees it |
 | `path_unreadable` | 400 | A file is there but the Calibre process cannot open it (permissions, or a directory). Since 0.6.3 |
 | `path_forbidden` | 400 | `path` contains `..`, or resolves outside `ingest_root` |
-| `bad_format` | 400 | No usable book format could be read from the extension |
+| `bad_format` | 400 | No usable book format could be read from the extension, or the extension is not a book format the bridge accepts (ebook, comic, document and audiobook extensions). Unreleased |
 | `body_too_large` | 413 | `Content-Length` exceeds `max_body_bytes` (default 64 MiB) |
 | `not_found` | 404 | No such endpoint, or no such book id |
 | `copy_failed` | 500 | Calibre read the file but failed to copy it into the library. `error` names the path. Since 0.6.3 |
@@ -209,6 +209,13 @@ applies the same `ingest_root` restriction as `POST /v1/books`, so it cannot be
 used to map the filesystem outside it either. A path with `..` in it, or one
 that resolves outside `ingest_root`, gets `400` with `path_forbidden`. A
 missing `path` parameter gets `400` with `invalid_metadata`.
+
+With no `ingest_root` set the probe answers for any path, so a caller holding
+the key can learn whether a path exists. Set `ingest_root` to the folder
+Bindery's books live in to close that. The bridge logs a warning at startup
+while it is empty. `POST /v1/books` accepts only book extensions whether or not
+a root is set, so an empty root no longer lets a caller import an arbitrary
+file.
 
 It deliberately does not require a database, so it still answers during a
 library swap. That is exactly when an operator is looking.

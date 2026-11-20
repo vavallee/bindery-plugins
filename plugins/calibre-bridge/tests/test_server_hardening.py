@@ -379,6 +379,16 @@ def test_a_key_of_exactly_the_minimum_length_is_accepted_on_a_network_bind(serve
     srv.stop()
 
 
+def test_start_warns_when_ingest_root_is_empty_and_not_when_set(server_module, tmp_path, caplog):
+    caplog.set_level("WARNING")
+    for root, expect in (("", True), (str(tmp_path), False)):
+        caplog.clear()
+        srv = server_module.BridgeServer()
+        srv.start(free_port(), "127.0.0.1", "k" * 16, lambda: _db(tmp_path), ingest_root=root)
+        srv.stop()
+        assert any("ingest_root is empty" in r.getMessage() for r in caplog.records) is expect
+
+
 def test_short_key_on_loopback_is_allowed(server_module, tmp_path):
     srv = server_module.BridgeServer()
     port = free_port()
