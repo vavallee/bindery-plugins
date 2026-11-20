@@ -17,7 +17,7 @@ spec:
             # from the release's .sha256 file and checked against the release
             # notes from your own machine. The chart refuses to render without it.
             # Change it together with pluginVersion.
-            pluginSha256: ""
+            pluginSha256: "27e363a6e09c28315d2911e45805b02ff2959c8976ed177885fc235b121150ac"
   template:
     metadata:
       name: "calibre-plugin-installer-{{cluster}}"
@@ -30,7 +30,7 @@ spec:
         # decides what runs next to your library, so for production pin the
         # commit SHA the tag points at instead, with the tag in a comment:
         #   targetRevision: <40 hex digit commit SHA>  # v-calibre-bridge-0.8.4
-        targetRevision: v-calibre-bridge-0.8.4
+        targetRevision: 4af2e452826fa846386be27e84229660a2ff1079  # v-calibre-bridge-0.8.4
         path: charts/calibre-plugin-installer
         helm:
           releaseName: calibre-plugin-installer
