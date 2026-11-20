@@ -246,6 +246,12 @@ render. Leave it empty to keep the sidecar check alone.
 A custom `releaseUrlTemplate` must be an https URL. A plain http mirror no
 longer works, and neither does a redirect from https to http.
 
+The register container runs with write access to the Calibre config volume, so
+`calibreImage` defaults to a digest pinned `lscr.io/linuxserver/calibre`. If
+your Calibre runs a different build, set `calibreImage.tag` and
+`calibreImage.digest` to match it, for example from
+`docker buildx imagetools inspect lscr.io/linuxserver/calibre:<tag>`.
+
 ### Upgrades
 
 Bump `pluginVersion` (and `pluginSha256`, if you pin it) in the chart's
