@@ -78,12 +78,21 @@ jobs:
         with:
           version: v3.14.4
       - name: helm lint
-        run: helm lint charts/calibre-plugin-installer
-      - name: helm template (defaults)
-        run: helm template ci charts/calibre-plugin-installer > /dev/null
+        run: helm lint charts/calibre-plugin-installer --set pluginSha256=0000000000000000000000000000000000000000000000000000000000000000
+      - name: helm template (defaults with a pin)
+        run: helm template ci charts/calibre-plugin-installer --set pluginSha256=0000000000000000000000000000000000000000000000000000000000000000 > /dev/null
+      - name: helm template rejects an empty pin
+        # The .sha256 sidecar comes from the same release as the zip, so the
+        # chart must refuse to render without an operator supplied hash.
+        run: |
+          if helm template ci charts/calibre-plugin-installer > /dev/null 2>&1; then
+            echo "expected the render to fail"
+            exit 1
+          fi
       - name: helm template (network policy)
         run: |
           helm template ci charts/calibre-plugin-installer \
+            --set pluginSha256=0000000000000000000000000000000000000000000000000000000000000000 \
             --set networkPolicy.enabled=true \
             --set 'networkPolicy.ingress.from[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=bindery' \
             > /dev/null
@@ -92,6 +101,7 @@ jobs:
         # bridge port, so the chart must refuse to render one.
         run: |
           if helm template ci charts/calibre-plugin-installer \
+            --set pluginSha256=0000000000000000000000000000000000000000000000000000000000000000 \
             --set networkPolicy.enabled=true > /dev/null 2>&1; then
             echo "expected the render to fail"
             exit 1
