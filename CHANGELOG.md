@@ -24,6 +24,12 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
   longer lock out the correct key. Use a generated key of at least 32 random
   characters. The 16 character minimum on a network bind is a floor.
 
+- **The Helm chart pins the register image by digest.** `calibreImage` now
+  defaults to a digest, since that container can write to the Calibre config
+  volume. If your Calibre runs another build, set `calibreImage.tag` and
+  `calibreImage.digest` to match it. The install guide shows how to read the
+  digest.
+
 ### [0.8.4] - 2026-11-13
 
 This release hardens the push server, identifier matching and the Helm chart installer. Update soon. Read the notes below first, because three of the changes can need action on your side:
@@ -484,6 +490,15 @@ Initial release.
 ## kavita-bridge
 
 ### [Unreleased]
+
+#### Changed
+
+- **A startup warning for a plain http Kavita URL.** When `KAVITA_BRIDGE_KAVITA_URL`
+  is `http://` and not on this machine, the bridge logs that the Kavita key is
+  sent unencrypted. In `jwt` mode the warning also says the key travels in a
+  query string that proxies and access logs record. Kavita's authenticate action
+  reads only the query, so that cannot move to a header; `api-key` mode, the
+  default, already sends the key in an `x-api-key` header.
 
 #### Added
 

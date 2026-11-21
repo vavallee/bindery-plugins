@@ -10,7 +10,7 @@ import threading
 from collections.abc import Sequence
 
 from . import __version__
-from .config import ConfigError, load
+from .config import ConfigError, load, plain_http_warning
 from .kavita import KavitaClient
 from .receiver import Receiver, RedactFilter
 from .service import ScanService
@@ -36,6 +36,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     for handler in logging.getLogger().handlers:
         handler.addFilter(redact)
     log.addFilter(redact)
+    warning = plain_http_warning(config)
+    if warning:
+        log.warning("%s", warning)
     if args.check_config:
         log.info("configuration ok: %s", config.redacted())
         return 0
