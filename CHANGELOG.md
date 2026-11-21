@@ -11,6 +11,19 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 #### Changed
 
+- **The Helm chart now requires `pluginSha256`.**
+  The chart refuses to render with `pluginSha256` empty, because the `.sha256`
+  file comes from the same release as the zip and cannot catch a replaced
+  release. Set it to the zip's SHA-256 (see the install guide), or set
+  `allowUnpinnedPlugin: true` to keep the old behaviour. The ArgoCD
+  example and the install guide now say to pin `targetRevision` to a commit
+  SHA, and the example carries a `pluginSha256` slot. `scripts/bump_chart.py` now
+  understands the commit SHA form of `targetRevision` and takes the hash with
+  `--sha256` (64 hex digits, a `.sha256` file or an https URL), so a release
+  bump moves the version, commit and hash together and fails without writing
+  anything when the hash is missing. `scripts/check_versions.py` checks the
+  hash is well formed and the pinned commit is the one the tag points at.
+
 - **Only book files can be imported.** `POST /v1/books` and pull deliveries
   now refuse a file whose extension is not an ebook, comic, document or
   audiobook format (`400 bad_format`). Before, with the default empty Ingest

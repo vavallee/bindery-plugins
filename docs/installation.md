@@ -220,7 +220,8 @@ place. It catches a corrupt download, but anyone who can replace the release
 files can replace both. The chart also requires the sidecar to be a single
 line naming exactly the zip it downloaded.
 
-For production, set `pluginSha256` to the expected SHA-256 of the zip. The
+`pluginSha256` is required: the chart refuses to render with it empty. Set it
+to the expected SHA-256 of the zip. The
 init container then fails unless the downloaded zip matches it, whatever the
 sidecar says, so the check no longer depends on the download origin:
 
@@ -240,7 +241,15 @@ sha256sum calibre-bridge-vX.Y.Z.zip
 
 Change `pluginSha256` whenever you change `pluginVersion`. A mismatch stops
 the pod, which is the point. A value that is not 64 hex digits fails the
-render. Leave it empty to keep the sidecar check alone.
+render. `allowUnpinnedPlugin: true` renders without a pin and leaves the
+sidecar check alone; only use it against a mirror you control.
+
+Pin where the chart comes from as well. A git tag can be moved by anyone who
+can push to the repository, and the chart decides which image and which zip run
+next to your library. In your ApplicationSet set `targetRevision` to the
+40 digit commit SHA the release tag points at (`git rev-parse
+v-calibre-bridge-X.Y.Z^{commit}`), and keep the tag in a comment. Bump the
+SHA, `pluginVersion` and `pluginSha256` together.
 
 A custom `releaseUrlTemplate` must be an https URL. A plain http mirror no
 longer works, and neither does a redirect from https to http.
@@ -253,7 +262,7 @@ your Calibre runs a different build, set `calibreImage.tag` and
 
 ### Upgrades
 
-Bump `pluginVersion` (and `pluginSha256`, if you pin it) in the chart's
+Bump `pluginVersion` (and `pluginSha256`) in the chart's
 `values.yaml` or in the ApplicationSet override (and `targetRevision` beside
 it), merge, and let ArgoCD sync. The init containers re-download and
 re-register the matching `.zip` on the next Calibre pod restart.

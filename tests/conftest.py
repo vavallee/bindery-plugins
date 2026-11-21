@@ -106,19 +106,24 @@ spec:
           - cluster: homelab
             # moves with targetRevision
             pluginVersion: "{version}"
+            pluginSha256: "{hash}"
   template:
     spec:
       source:
         repoURL: https://github.com/vavallee/bindery-plugins
-        targetRevision: v-calibre-bridge-{version}
+        targetRevision: {revision}
         helm:
           valuesObject:
             pluginVersion: "{{{{pluginVersion}}}}"
+            pluginSha256: "{{{{pluginSha256}}}}"
 """
+
+OLD_HASH = "a" * 64
+OLD_COMMIT = "b" * 40
 
 
 def write_release_tree(
-    root: pathlib.Path, *, plugin: str = "1.2.3", chart: str = "1.2.3"
+    root: pathlib.Path, *, plugin: str = "1.2.3", chart: str = "1.2.3", sha_form: bool = False
 ) -> pathlib.Path:
     """A stand in for the repository: every file that names a version."""
     plugin_dir = root / "plugins" / "calibre-bridge"
@@ -132,7 +137,12 @@ def write_release_tree(
     (chart_dir / "Chart.yaml").write_text(CHART_TEMPLATE.format(version=chart))
     (chart_dir / "values.yaml").write_text(VALUES_TEMPLATE.format(version=chart))
     (root / "argocd").mkdir()
-    (root / "argocd" / "application.yaml").write_text(ARGOCD_TEMPLATE.format(version=chart))
+    revision = (
+        f"{OLD_COMMIT}  # v-calibre-bridge-{chart}" if sha_form else f"v-calibre-bridge-{chart}"
+    )
+    (root / "argocd" / "application.yaml").write_text(
+        ARGOCD_TEMPLATE.format(version=chart, hash=OLD_HASH, revision=revision)
+    )
     return root
 
 
@@ -144,3 +154,9 @@ def make_release_tree() -> Callable[..., pathlib.Path]:
 @pytest.fixture
 def release_tree(tmp_path: pathlib.Path) -> pathlib.Path:
     return write_release_tree(tmp_path / "repo")
+
+
+@pytest.fixture
+def sha_tree(tmp_path: pathlib.Path) -> pathlib.Path:
+    """The release tree with targetRevision pinned to a commit, as the real file is."""
+    return write_release_tree(tmp_path / "repo", sha_form=True)

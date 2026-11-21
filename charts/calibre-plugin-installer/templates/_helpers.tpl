@@ -29,7 +29,8 @@ would leave an operator believing the old no-op install still works.
 {{- end -}}
 
 {{/*
-The pinned zip hash, lower case, or "" when pluginSha256 is not set. A value
+The pinned zip hash, lower case. Empty is refused unless allowUnpinnedPlugin is
+true, and then it renders as "". A value
 that is not 64 hex digits fails the render: a typo must not turn into a pin
 that can never match or, worse, into no pin at all.
 */}}
@@ -37,6 +38,9 @@ that can never match or, worse, into no pin at all.
 {{- $h := (default "" .Values.pluginSha256) | toString | trim | lower -}}
 {{- if and $h (not (regexMatch "^[0-9a-f]{64}$" $h)) -}}
 {{ fail "pluginSha256 must be 64 hex digits, the SHA-256 of the release zip. Copy it from the release's .sha256 file." }}
+{{- end -}}
+{{- if and (not $h) (not .Values.allowUnpinnedPlugin) -}}
+{{ fail "pluginSha256 is required. The .sha256 file comes from the same release as the zip, so on its own it cannot catch a replaced release. Set pluginSha256 to the zip's SHA-256 (see docs/installation.md, Pin the zip hash), or set allowUnpinnedPlugin=true to accept an unverified download." }}
 {{- end -}}
 {{- $h -}}
 {{- end -}}

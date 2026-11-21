@@ -13,6 +13,11 @@ spec:
             # below, in the chart PR that follows each release:
             # python scripts/bump_chart.py X.Y.Z
             pluginVersion: "0.8.4"
+            # Required. The SHA-256 of calibre-bridge-v<pluginVersion>.zip, taken
+            # from the release's .sha256 file and checked against the release
+            # notes from your own machine. The chart refuses to render without it.
+            # Change it together with pluginVersion.
+            pluginSha256: "27e363a6e09c28315d2911e45805b02ff2959c8976ed177885fc235b121150ac"
   template:
     metadata:
       name: "calibre-plugin-installer-{{cluster}}"
@@ -21,12 +26,17 @@ spec:
       source:
         repoURL: https://github.com/vavallee/bindery-plugins
         # The chart as of that release tag. Moves with pluginVersion above.
-        targetRevision: v-calibre-bridge-0.8.4
+        # A tag can be moved by whoever can push to the repo, and the chart
+        # decides what runs next to your library, so for production pin the
+        # commit SHA the tag points at instead, with the tag in a comment:
+        #   targetRevision: <40 hex digit commit SHA>  # v-calibre-bridge-0.8.4
+        targetRevision: 4af2e452826fa846386be27e84229660a2ff1079  # v-calibre-bridge-0.8.4
         path: charts/calibre-plugin-installer
         helm:
           releaseName: calibre-plugin-installer
           valuesObject:
             pluginVersion: "{{pluginVersion}}"
+            pluginSha256: "{{pluginSha256}}"
             calibreDeploymentName: calibre
             calibreNamespace: "{{namespace}}"
             calibreHome: /config

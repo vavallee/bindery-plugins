@@ -42,8 +42,11 @@ def require_helm():
 needs_helm = pytest.mark.usefixtures("require_helm")
 
 
-def _render(*sets: str) -> str:
+def _render(*sets: str, pinned: bool = True) -> str:
+    """Render the chart. The pin is required, so supply one unless told not to."""
     args = ["helm", "template", "ci", str(CHART)]
+    if pinned:
+        args += ["--set", f"pluginSha256={ZIP_SHA}"]
     for item in sets:
         args += ["--set", item]
     return subprocess.run(args, check=True, capture_output=True, text=True).stdout
@@ -68,8 +71,10 @@ def test_both_init_containers_set_the_runtime_default_seccomp_profile():
     assert text.count("seccompProfile:\n              type: RuntimeDefault") == 2
 
 
-def test_the_default_pin_is_empty():
-    assert 'pluginSha256: ""' in (CHART / "values.yaml").read_text()
+def test_the_default_pin_is_empty_and_the_escape_hatch_is_off():
+    text = (CHART / "values.yaml").read_text()
+    assert 'pluginSha256: ""' in text
+    assert "allowUnpinnedPlugin: false" in text
 
 
 def test_the_register_image_is_pinned_by_digest():
@@ -87,8 +92,15 @@ def test_the_register_image_renders_by_digest():
 
 
 @needs_helm
-def test_unset_pin_renders_an_empty_hash_and_keeps_the_sidecar_check():
-    out = _render()
+def test_an_empty_pin_fails_the_render():
+    with pytest.raises(subprocess.CalledProcessError) as err:
+        _render(pinned=False)
+    assert "pluginSha256 is required" in err.value.stderr
+
+
+@needs_helm
+def test_unpinned_renders_only_with_the_escape_hatch_and_keeps_the_sidecar_check():
+    out = _render("allowUnpinnedPlugin=true", pinned=False)
     assert 'name: PLUGIN_SHA256\n              value: ""' in out
     script = _fetch_script(out)
     assert "sidecar_name" in script

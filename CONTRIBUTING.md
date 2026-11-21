@@ -273,17 +273,27 @@ That is why the chart moves in its own PR after the release, and why it trails
 `__init__.py` in between. That PR is one command:
 
 ```bash
-python scripts/bump_chart.py X.Y.Z
+python scripts/bump_chart.py X.Y.Z --sha256 calibre-bridge-vX.Y.Z.zip.sha256
 ```
 
-It sets `appVersion` in `Chart.yaml`, `pluginVersion` in `values.yaml`, and
-both `pluginVersion` and `targetRevision` in `argocd/application.yaml`, and
-bumps the chart's own patch `version`. `scripts/check_versions.py` fails CI if
-those four disagree with each other or run ahead of the newest `CHANGELOG.md`
-section.
+`--sha256` takes 64 hex digits, the path of the release's `.sha256` file or an
+https URL of it, and is required whenever the version changes: the script
+fails without writing anything rather than leave the previous release's hash
+behind. Check the hash against the release notes from a second machine first.
+`targetRevision` stays in the form the file already has. In the commit form
+(`<40 hex>  # v-calibre-bridge-X.Y.Z`) the SHA is read from the local tag, else
+from `git ls-remote`, or given with `--commit`.
+
+It sets `appVersion` in `Chart.yaml`, `pluginVersion` in `values.yaml`,
+`pluginVersion`, `pluginSha256` and `targetRevision` in `argocd/application.yaml`
+(and `pluginSha256` in `values.yaml` if that file carries one), and bumps the
+chart's own patch `version`. `scripts/check_versions.py` fails CI if the
+versions disagree with each other or run ahead of the newest `CHANGELOG.md`
+section, if the ArgoCD hash is not 64 hex digits, or if the pinned commit is
+not the commit the local tag points at.
 
 `argocd/application.yaml` reads the chart from the release tag
-(`targetRevision: v-calibre-bridge-X.Y.Z`), not from a branch. A change to the
+(`targetRevision: v-calibre-bridge-X.Y.Z`, or the commit that tag points at), not from a branch. A change to the
 chart itself therefore reaches an ArgoCD install only once a later release tag
 contains it and the chart PR has moved the pin to that tag.
 
