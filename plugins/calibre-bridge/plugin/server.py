@@ -170,6 +170,12 @@ class BridgeServer:
                 f"than {MIN_NETWORK_KEY_LENGTH} characters. Press Generate in the Bindery "
                 "Bridge config for a strong key, or bind to 127.0.0.1"
             )
+        if not ingest_root.strip():
+            _log.warning(
+                "ingest_root is empty: any caller holding the key can import any readable "
+                "file with a book extension, and probe whether any path exists. Set Ingest "
+                "root in the Bindery Bridge settings to the folder Bindery's books live in."
+            )
         handler_cls = make_handler(
             api_key=api_key,
             get_db=get_db,
