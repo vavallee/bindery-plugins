@@ -178,7 +178,10 @@ its log and exit code.
 - **Secrets stay out of logs.** Neither key, the token or a JWT is logged. The
   JWT sign in puts the key in a query string because Kavita's action reads it
   there; the bridge never prints a URL, and a filter on the log replaces any
-  known secret that slips into a message.
+  known secret that slips into a message. Kavita's authenticate action reads only the query, so this cannot be
+  a header. Use `https://` for `KAVITA_BRIDGE_KAVITA_URL`, or the default
+  `api-key` mode, which sends the key in an `x-api-key` header. The bridge logs
+  a warning at startup for a plain `http://` URL that is not on this machine.
 - **Requests refused early.** A request with an `Origin` header gets `403`;
   `Content-Type: application/json` is required (`415`); bodies over 256 KiB get
   `413`; a stalled client is dropped after 10 seconds; at most 32 connections
