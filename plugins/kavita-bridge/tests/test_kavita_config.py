@@ -12,7 +12,14 @@ from pathlib import Path
 import pytest
 from conftest import free_port
 from kavita_bridge import __main__ as entry
-from kavita_bridge.config import Config, ConfigError, PathMapping, is_loopback, load
+from kavita_bridge.config import (
+    Config,
+    ConfigError,
+    PathMapping,
+    is_loopback,
+    load,
+    plain_http_warning,
+)
 
 ENV = {
     "KAVITA_BRIDGE_KAVITA_URL": "http://kavita:5000/",
@@ -170,6 +177,38 @@ class TestSecretsInConfigViews:
         with pytest.raises(ConfigError) as info:
             load(env(KAVITA_BRIDGE_BIND_HOST="0.0.0.0", KAVITA_BRIDGE_API_KEY="shortsecret"))  # noqa: S104
         assert "shortsecret" not in str(info.value)
+
+
+class TestPlainHttpWarning:
+    def test_jwt_over_http_warns_about_the_query_string(self):
+        warning = plain_http_warning(load(env(KAVITA_BRIDGE_AUTH_MODE="jwt")))
+        assert warning and "query string" in warning
+        assert "kavitakeykavitakey" not in warning
+
+    def test_api_key_over_http_warns_without_the_query_string(self):
+        warning = plain_http_warning(load(env()))
+        assert warning and "plain http" in warning and "query string" not in warning
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://kavita.example",
+            "http://127.0.0.1:5000",
+            "http://localhost:5000",
+            "http://[::1]:5000",
+        ],
+    )
+    def test_https_and_loopback_do_not_warn(self, url):
+        for mode in ("api-key", "jwt"):
+            cfg = load(env(KAVITA_BRIDGE_KAVITA_URL=url, KAVITA_BRIDGE_AUTH_MODE=mode))
+            assert plain_http_warning(cfg) is None
+
+    def test_startup_logs_the_warning(self, monkeypatch, caplog):
+        for k, v in env(KAVITA_BRIDGE_AUTH_MODE="jwt").items():
+            monkeypatch.setenv(k, v)
+        caplog.set_level(logging.WARNING, logger="kavita_bridge")
+        assert entry.main(["--check-config"]) == 0
+        assert any("plain http" in r.getMessage() for r in caplog.records)
 
 
 class TestEntryPoint:

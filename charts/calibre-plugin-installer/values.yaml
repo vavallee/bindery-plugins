@@ -35,11 +35,14 @@ image:
 
 # Image used to register the plugin with calibre. It must provide the
 # calibre-customize CLI, so in practice it is the same image the Calibre
-# Deployment itself runs. Set digest to pin it.
+# Deployment itself runs. This container can write to calibreHome, so it is
+# pinned by digest (the multi-arch index digest of the tag below as of
+# 2026-11-19). The tag is for readability only; the digest wins. To follow the
+# image your Calibre Deployment runs, set both to match it.
 calibreImage:
   repository: lscr.io/linuxserver/calibre
   tag: latest
-  digest: ""
+  digest: "sha256:dbaefbf648b2197bd25d783830b6fbe1be0da8a0cb5d837ddc9973ebc6e6e3d2"
   customizePath: calibre-customize
 
 releaseUrlTemplate: "https://github.com/vavallee/bindery-plugins/releases/download/v-calibre-bridge-{{ .Values.pluginVersion }}/calibre-bridge-v{{ .Values.pluginVersion }}.zip"
