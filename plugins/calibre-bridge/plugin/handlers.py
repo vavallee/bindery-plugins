@@ -508,11 +508,18 @@ def make_handler(
             if not api_key:
                 return True
             addr = self.client_address[0]
+            header = self.headers.get("Authorization", "")
+            # The correct key always passes, even from a blocked address, so
+            # anything sharing Bindery's source address cannot lock Bindery out
+            # by sending bad tokens. Only failed attempts are throttled.
+            if header.startswith("Bearer ") and _tokens_match(
+                header[len("Bearer ") :].strip(), api_key
+            ):
+                return True
             wait = throttle.retry_after(addr)
             if wait:
                 self._throttle_wait = wait
                 return False
-            header = self.headers.get("Authorization", "")
             if not header.startswith("Bearer "):
                 if not quiet:
                     _log.warning(

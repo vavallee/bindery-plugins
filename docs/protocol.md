@@ -59,16 +59,25 @@ Requests the server refuses before it looks at a credential or a body:
   line and headers exceed 16 KiB or 64 header lines gets `431`.
 
 Failed bearer attempts are counted per client address. Five failures within a
-minute block that address for a minute: every request from it, a correct key
-included, gets `429 rate_limited` with `Retry-After`. Other addresses are not
+minute block that address for a minute: a request from it with a wrong or
+missing key gets `429 rate_limited` with `Retry-After`. Other addresses are not
 affected. A missing token on `GET /v1/health` does not count.
 
-The block covers the whole address, a correct key included. Behind NAT or on a
-Docker bridge several clients share an address, so one of them can lock the
-others out for a minute, and a Bindery holding a stale key locks itself out
-because its health probes with a wrong token count. The operator sees `429`
-with `Retry-After`. Correcting the key is the fix; the block lifts by itself
-after a minute. IPv6 peers are tracked by their /64 prefix.
+Only failed attempts are throttled. A request carrying the correct key is
+always served, even from a blocked address, so a client that shares Bindery's
+source address (NAT, a Docker bridge) cannot lock Bindery out by sending bad
+tokens. A Bindery holding a stale key still sees `429` with `Retry-After`,
+because its own wrong attempts are the ones being counted; correcting the key
+is the fix. The block lifts by itself after a minute. IPv6 peers are tracked by
+their /64 prefix.
+
+This is a tradeoff. The correct key is checked first, with a constant time
+comparison, before the throttle is consulted. That means the throttle no longer
+rate limits key guessing from a blocked address: a guess with a wrong key gets
+`429` and a guess with the right key gets `200`, so a client that can reach the
+bridge can keep guessing without being slowed down. Use a generated key of at
+least 32 random characters (Press Generate in the plugin settings). The 16
+character minimum enforced on a network bind is a floor, not a recommendation.
 
 Each connection has 10 seconds in total to send its request line and headers,
 a hard deadline that a slow trickle does not extend. A body then has 30 seconds
