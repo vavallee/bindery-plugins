@@ -25,6 +25,27 @@ DEDUPE_IDENTIFIERS = ("isbn", "asin", "google", "hardcover")
 # from the network like any other field.
 MAX_COVER_BYTES = 16 * 1024 * 1024
 
+# Extensions a push or a delivery may name. The bridge hands the file to
+# Calibre's metadata readers and copies it into the library, so without this a
+# caller holding the key could import any file Calibre can read. Covers the
+# ebook, comic, document and audiobook formats Calibre and Bindery deal in.
+BOOK_EXTENSIONS = frozenset(
+    {
+        "epub", "kepub", "mobi", "azw", "azw3", "azw4", "kfx", "prc", "pdb", "pdf", "fb2", "fbz",
+        "djvu", "cbz", "cbr", "cb7", "cbc", "txt", "txtz", "rtf", "docx", "odt", "htm", "html",
+        "htmlz", "lit", "lrf", "snb", "tpz", "mp3", "m4a", "m4b", "aac", "ogg", "opus", "flac",
+        "wav", "wma", "mp4",
+    }
+)  # fmt: skip
+
+# Extensions a ``metadata.coverPath`` may carry. Without this a cover path
+# could name any readable file (up to MAX_COVER_BYTES), which would be stored
+# as the book's cover and served by Calibre's content server. These are the
+# raster formats Calibre's image loader (Qt) reads for covers.
+COVER_EXTENSIONS = frozenset(
+    {"jpg", "jpeg", "jpe", "jfif", "png", "gif", "webp", "bmp", "tif", "tiff"}
+)
+
 # Calibre writes these placeholders when it has nothing better (see
 # Cache.create_book_entry: ``mi.title = mi.title or _('Unknown')``), so a
 # metadata update must treat them as empty rather than as a user's own value.
@@ -201,6 +222,13 @@ def add_book_detailed(
     fmt = os.path.splitext(path)[1][1:].upper()
     if not fmt:
         raise BadFormat(f"Cannot determine book format from extension: {path!r}")
+    if fmt.lower() not in BOOK_EXTENSIONS:
+        raise BadFormat(f"Not an allowed book extension: {path!r}")
+    # A symlink named x.epub that points at some other file passes the check
+    # above, so the real target's extension must be an allowed one too. This
+    # only inspects the name, it never opens the path.
+    if _resolved_extension(path) not in BOOK_EXTENSIONS:
+        raise BadFormat(f"Not an allowed book extension: {path!r}")
     api = db.new_api
     path = _calibre_safe_path(path)
     try:
@@ -681,6 +709,15 @@ def _load_cover(metadata: dict[str, Any] | None, ingest_root: str) -> _Cover:
     except ValueError as exc:
         _log.warning("cover rejected: %s", exc)
         return _Cover(False)
+    # Extension first, on the supplied path and on its resolved target, and
+    # before anything touches the file, so the outcome says nothing about
+    # whether a non image path exists.
+    if (
+        os.path.splitext(cover_path)[1][1:].lower() not in COVER_EXTENSIONS
+        or _resolved_extension(cover_path) not in COVER_EXTENSIONS
+    ):
+        _log.warning("cover rejected: not an image extension: %r", cover_path)
+        return _Cover(False)
     cover_path = _calibre_safe_path(cover_path)
     try:
         size = os.path.getsize(cover_path)
@@ -708,6 +745,11 @@ def _cover_format(path: str) -> str:
     if ext in ("jpg", "jpeg"):
         return "jpeg"
     return ext or "jpeg"
+
+
+def _resolved_extension(path: str) -> str:
+    """Lower case extension of ``path`` after following symlinks, no dot."""
+    return os.path.splitext(os.path.realpath(_calibre_safe_path(path)))[1][1:].lower()
 
 
 def _check_ingest_path(path: str, ingest_root: str) -> None:
