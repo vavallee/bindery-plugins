@@ -17,6 +17,13 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
   served. Before, anything sharing Bindery's source address could lock Bindery
   out by sending bad tokens.
 
+  The tradeoff: the throttle now counts only failed attempts and no longer
+  rate limits key guessing from a blocked address. A wrong key still gets
+  `429` and the right key gets `200`, with the constant time comparison run
+  first. The real fix is that anything sharing Bindery's source address can no
+  longer lock out the correct key. Use a generated key of at least 32 random
+  characters. The 16 character minimum on a network bind is a floor.
+
 ### [0.8.4] - 2026-11-13
 
 This release hardens the push server, identifier matching and the Helm chart installer. Update soon. Read the notes below first, because three of the changes can need action on your side:

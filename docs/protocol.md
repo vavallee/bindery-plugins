@@ -71,6 +71,14 @@ because its own wrong attempts are the ones being counted; correcting the key
 is the fix. The block lifts by itself after a minute. IPv6 peers are tracked by
 their /64 prefix.
 
+This is a tradeoff. The correct key is checked first, with a constant time
+comparison, before the throttle is consulted. That means the throttle no longer
+rate limits key guessing from a blocked address: a guess with a wrong key gets
+`429` and a guess with the right key gets `200`, so a client that can reach the
+bridge can keep guessing without being slowed down. Use a generated key of at
+least 32 random characters (Press Generate in the plugin settings). The 16
+character minimum enforced on a network bind is a floor, not a recommendation.
+
 Each connection has 10 seconds in total to send its request line and headers,
 a hard deadline that a slow trickle does not extend. A body then has 30 seconds
 plus one second per MiB of `Content-Length` in total (94 seconds at the 64 MiB
