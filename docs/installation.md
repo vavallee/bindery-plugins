@@ -45,11 +45,10 @@ key is recommended even there.
 
 Failed keys are throttled per client address: five wrong or malformed bearer
 tokens within a minute block that address for a minute, and during the block
-every request from it gets `429` with a `Retry-After` header, even with the
-correct key. Behind NAT or on a Docker bridge many clients share one address,
-so any of them can lock the others out for a minute, and a Bindery holding a
-stale key locks itself out, because its health checks count too. What you see
-is `429` with `Retry-After` in the Calibre bridge log and in Bindery's
+a request from it with a wrong or missing key gets `429` with a `Retry-After`
+header. A request with the correct key is always served, so other clients
+behind the same NAT or Docker bridge address cannot lock Bindery out. A Bindery
+holding a stale key sees `429` in the Calibre bridge log and in Bindery's
 Calibre status. The fix is to correct the key (Bindery Settings, Calibre, and
 the plugin's Customize window); the block then lifts on its own.
 

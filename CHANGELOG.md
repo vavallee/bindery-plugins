@@ -24,6 +24,19 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
   anything when the hash is missing. `scripts/check_versions.py` checks the
   hash is well formed and the pinned commit is the one the tag points at.
 
+- **The failed key throttle no longer blocks the correct key.** Five wrong
+  tokens from one address still block wrong or missing keys from that address
+  for a minute with `429`, but a request with the correct key is always
+  served. Before, anything sharing Bindery's source address could lock Bindery
+  out by sending bad tokens.
+
+  The tradeoff: the throttle now counts only failed attempts and no longer
+  rate limits key guessing from a blocked address. A wrong key still gets
+  `429` and the right key gets `200`, with the constant time comparison run
+  first. The real fix is that anything sharing Bindery's source address can no
+  longer lock out the correct key. Use a generated key of at least 32 random
+  characters. The 16 character minimum on a network bind is a floor.
+
 - **The Helm chart pins the register image by digest.** `calibreImage` now
   defaults to a digest, since that container can write to the Calibre config
   volume. If your Calibre runs another build, set `calibreImage.tag` and
