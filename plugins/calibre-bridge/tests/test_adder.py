@@ -490,6 +490,26 @@ def test_add_book_ingest_root_rejects_symlink_escape(tmp_path):
         adder.add_book(_make_db(), str(link), ingest_root=str(root))
 
 
+@pytest.mark.parametrize("name", ["secrets.db", "passwd.conf", "x.py", "key.pem"])
+def test_add_book_rejects_a_non_book_extension_even_without_an_ingest_root(tmp_path, name):
+    adder = _load_adder()
+    target = tmp_path / name
+    target.write_bytes(b"not a book")
+    db = MagicMock()
+    with pytest.raises(adder.BadFormat, match="allowed book extension"):
+        adder.add_book(db, str(target), ingest_root="")
+    db.new_api.add_books.assert_not_called()
+
+
+def test_add_book_extension_check_ignores_case(tmp_path):
+    adder = _load_adder()
+    book = tmp_path / "Book.EPUB"
+    book.write_bytes(b"stub")
+    db = MagicMock()
+    db.new_api.add_books.return_value = ([9], {})
+    assert adder.add_book(db, str(book))[0] == 9
+
+
 def test_add_book_empty_ingest_root_allows_absolute(tmp_path):
     """Backward-compat: with no ingest_root configured, absolute paths inside
     the system are not rejected by the root guard (the .. check still applies)."""
