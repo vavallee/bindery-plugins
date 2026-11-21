@@ -9,6 +9,14 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
 
 ### [Unreleased]
 
+#### Changed
+
+- **The Helm chart pins the register image by digest.** `calibreImage` now
+  defaults to a digest, since that container can write to the Calibre config
+  volume. If your Calibre runs another build, set `calibreImage.tag` and
+  `calibreImage.digest` to match it. The install guide shows how to read the
+  digest.
+
 ### [0.8.4] - 2026-11-13
 
 This release hardens the push server, identifier matching and the Helm chart installer. Update soon. Read the notes below first, because three of the changes can need action on your side:

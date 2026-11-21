@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
+import re
 import shutil
 import stat
 import subprocess
@@ -71,7 +72,18 @@ def test_the_default_pin_is_empty():
     assert 'pluginSha256: ""' in (CHART / "values.yaml").read_text()
 
 
+def test_the_register_image_is_pinned_by_digest():
+    text = (CHART / "values.yaml").read_text()
+    block = text[text.index("calibreImage:") :]
+    assert re.search(r'digest: "sha256:[0-9a-f]{64}"', block.split("\n\n")[0])
+
+
 # rendered
+
+
+@needs_helm
+def test_the_register_image_renders_by_digest():
+    assert re.search(r"image: \"lscr.io/linuxserver/calibre@sha256:[0-9a-f]{64}\"", _render())
 
 
 @needs_helm
