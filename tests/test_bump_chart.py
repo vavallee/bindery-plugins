@@ -268,3 +268,10 @@ def test_the_commit_is_resolved_from_the_local_tag(bump_chart, sha_tree, tmp_pat
 
     assert bump_chart.resolve_commit("1.2.4", repo) == head
     assert bump_chart.resolve_commit("9.9.9", repo, remote=False) is None
+
+
+def test_the_hash_url_opener_refuses_file_and_ftp_urls(bump_chart):
+    opener = bump_chart._https_only_opener()
+    for url in ("file:///etc/hostname", "ftp://example.invalid/x.sha256"):
+        with pytest.raises(OSError):
+            opener.open(url, timeout=1)

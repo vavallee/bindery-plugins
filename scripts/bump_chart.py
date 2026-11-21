@@ -146,6 +146,22 @@ def read_hashes(repo_root: pathlib.Path = REPO_ROOT) -> dict[str, str]:
     return found
 
 
+def _https_only_opener() -> urllib.request.OpenerDirector:
+    """An opener that speaks https and follows redirects, nothing else.
+    `urllib.request.urlopen` also handles `file:` and `ftp:`, so a redirect to
+    one of those would read a local file; this opener raises on them instead."""
+    opener = urllib.request.OpenerDirector()
+    for handler in (
+        urllib.request.HTTPSHandler(),
+        urllib.request.HTTPRedirectHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        urllib.request.HTTPErrorProcessor(),
+        urllib.request.UnknownHandler(),
+    ):
+        opener.add_handler(handler)
+    return opener
+
+
 def parse_sha256(value: str) -> str:
     """64 hex digits from a literal, a `.sha256` file path or an https URL."""
     value = value.strip()
@@ -153,8 +169,8 @@ def parse_sha256(value: str) -> str:
         return value.lower()
     if value.startswith("https://"):
         try:
-            with urllib.request.urlopen(value, timeout=30) as response:  # noqa: S310
-                content = response.read(4096).decode("utf-8", "replace")
+            with _https_only_opener().open(value, timeout=30) as response:
+                content = str(response.read(4096), "utf-8", "replace")
         except OSError as exc:
             raise ChartError(f"could not fetch {value}: {exc}") from exc
     elif value.startswith(("http://", "ftp:")):
