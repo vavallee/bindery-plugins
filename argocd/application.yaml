@@ -37,6 +37,9 @@ spec:
               # the calibre-customize CLI that registers the plugin.
               repository: lscr.io/linuxserver/calibre
               tag: latest
+              # Pinned by digest in the chart's values.yaml. Override it here
+              # with the digest of the image your Calibre Deployment runs.
+              # digest: "sha256:..."
       destination:
         server: https://kubernetes.default.svc
         namespace: "{{namespace}}"
