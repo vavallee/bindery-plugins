@@ -63,6 +63,25 @@ def problems(repo_root: pathlib.Path = REPO_ROOT, plugin_dir: str = PLUGIN_DIR) 
         found.append(str(exc))
         return found
 
+    # The hash and, in the commit form, the commit must be well formed. The
+    # version of the commit form lives in its trailing tag comment, which
+    # read_pins already compares with every other pin below.
+    try:
+        hashes = bump_chart.read_hashes(repo_root)
+    except bump_chart.ChartError as exc:
+        found.append(str(exc))
+        hashes = {}
+    commit = hashes.get("ArgoCD targetRevision commit")
+    if commit is not None:
+        tag_commit = bump_chart.resolve_commit(
+            pins["ArgoCD targetRevision"], repo_root, remote=False
+        )
+        if tag_commit is not None and tag_commit != commit:
+            found.append(
+                f"ArgoCD targetRevision pins {commit} but tag "
+                f"{bump_chart.TAG_PREFIX}{pins['ArgoCD targetRevision']} points at {tag_commit}"
+            )
+
     if len(set(pins.values())) > 1:
         listing = ", ".join(f"{name} {version}" for name, version in pins.items())
         found.append(

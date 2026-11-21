@@ -104,3 +104,31 @@ def test_main_exit_codes(check_versions, release_tree, capsys):
     edit(release_tree / "plugins" / "calibre-bridge" / "__init__.py", "(1, 2, 3)", "(2, 0, 0)")
     assert check_versions.main(["--repo-root", str(release_tree)]) == 1
     assert "declares 2.0.0" in capsys.readouterr().err
+
+
+def test_a_sha_pinned_tree_passes(check_versions, sha_tree):
+    assert check_versions.problems(sha_tree) == []
+
+
+def test_a_sha_comment_tag_that_disagrees_with_the_chart_fails(check_versions, sha_tree):
+    edit(
+        sha_tree / "argocd" / "application.yaml",
+        f"{'b' * 40}  # v-calibre-bridge-1.2.3",
+        f"{'b' * 40}  # v-calibre-bridge-1.2.2",
+    )
+    (problem,) = check_versions.problems(sha_tree)
+    assert "disagree" in problem and "ArgoCD targetRevision 1.2.2" in problem
+
+
+def test_an_empty_or_malformed_argocd_hash_fails(check_versions, sha_tree):
+    edit(
+        sha_tree / "argocd" / "application.yaml", f'pluginSha256: "{"a" * 64}"', 'pluginSha256: ""'
+    )
+    (problem,) = check_versions.problems(sha_tree)
+    assert "pluginSha256" in problem
+
+
+def test_a_commit_that_is_not_the_tags_commit_fails(check_versions, sha_tree, monkeypatch):
+    monkeypatch.setattr(check_versions.bump_chart, "resolve_commit", lambda *a, **k: "e" * 40)
+    (problem,) = check_versions.problems(sha_tree)
+    assert "points at " + "e" * 40 in problem
