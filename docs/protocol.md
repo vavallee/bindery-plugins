@@ -213,9 +213,11 @@ missing `path` parameter gets `400` with `invalid_metadata`.
 With no `ingest_root` set the probe answers for any path, so a caller holding
 the key can learn whether a path exists. Set `ingest_root` to the folder
 Bindery's books live in to close that. The bridge logs a warning at startup
-while it is empty. `POST /v1/books` accepts only book extensions whether or not
-a root is set, so an empty root no longer lets a caller import an arbitrary
-file.
+while it is empty. `POST /v1/books` accepts only book extensions and
+`coverPath` only image extensions whether or not a root is set. Both are
+checked on the supplied path and on the real path after symlinks, so an empty
+root no longer lets a caller import an arbitrary file or store one as a
+cover.
 
 It deliberately does not require a database, so it still answers during a
 library swap. That is exactly when an operator is looking.
@@ -289,12 +291,14 @@ metadata is the better source for a book Bindery just imported.
 **`coverPath`**
 
 Read off disk and applied to the new row. It is validated exactly like `path`
-(no `..`, inside `ingest_root` when one is configured), because it arrives from
+(no `..`, inside `ingest_root` when one is configured) and must also carry an
+image extension (`.jpg .jpeg .jpe .jfif .png .gif .webp .bmp .tif .tiff`, any
+case) on both the supplied and the symlink resolved path, because it arrives from
 the network and the bytes end up readable through Calibre's content server. It
 is also capped at 16 MiB.
 
 A cover problem never fails the add. A cover that is missing, unreadable, empty,
-oversized or outside the ingest root is logged and reported, and the book is
+oversized, not an image extension or outside the ingest root is logged and reported, and the book is
 added without it. When the request carried a `coverPath` the success response
 gains a `cover_applied` boolean; when it did not, the field is absent and the
 response is byte for byte the 0.5.0 shape.

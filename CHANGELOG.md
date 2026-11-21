@@ -20,6 +20,16 @@ per-plugin basis (tag format `v-<plugin>-X.Y.Z`).
   and it also stops `GET /v1/paths` revealing whether other paths exist. The
   default stays empty because the bridge cannot know where Bindery's remapped
   downloads live, and a guess would break existing pushes.
+- **Covers are held to the same rule.** `metadata.coverPath` must now carry
+  an image extension (jpg, jpeg, jpe, jfif, png, gif, webp, bmp, tif, tiff),
+  checked case insensitively and before the file is opened, with or without an
+  Ingest root. Before, an empty Ingest root let a caller store any readable
+  file up to 16 MiB as a book's cover, and Calibre's content server then
+  served it. Book files and covers are also checked on the extension of the
+  real path after symlinks are followed, so a link named `x.epub` that points
+  at a non book file is refused. A link inside the Ingest root that resolves to
+  a real book or image inside it still works. A refused cover is reported as
+  `cover_applied: false`, the same as a missing one.
 
 ### [0.8.4] - 2026-11-13
 
